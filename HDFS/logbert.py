@@ -31,7 +31,7 @@ options["mask_ratio"] = 0.65
 # sample ratio
 options["train_ratio"] = 1
 options["valid_ratio"] = 0.1
-options["test_ratio"] = 1
+options["test_ratio"] = 0.1
 
 # features
 options["is_logkey"] = True

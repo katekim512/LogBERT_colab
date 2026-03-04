@@ -8,6 +8,7 @@ import torch
 from tqdm import tqdm
 tqdm.disable = True
 from torch.utils.data import DataLoader
+import gc
 
 from bert_pytorch.dataset import WordVocab
 from bert_pytorch.dataset import LogDataset
@@ -81,26 +82,34 @@ class Predictor():
         self.mask_ratio = options["mask_ratio"]
         self.min_len=options["min_len"]
 
+    # def detect_logkey_anomaly(self, masked_output, masked_label):
+    #     num_undetected_tokens = 0
+    #     output_maskes = []
+    #     for i, token in enumerate(masked_label):
+    #         # output_maskes.append(torch.argsort(-masked_output[i])[:30].cpu().numpy()) # extract top 30 candidates for mask labels
+
+    #         if token not in torch.argsort(-masked_output[i])[:self.num_candidates]:
+    #             num_undetected_tokens += 1
+
+    #     return num_undetected_tokens, [output_maskes, masked_label.cpu().numpy()]
+
     def detect_logkey_anomaly(self, masked_output, masked_label):
-        num_undetected_tokens = 0
-        output_maskes = []
-        for i, token in enumerate(masked_label):
-            # output_maskes.append(torch.argsort(-masked_output[i])[:30].cpu().numpy()) # extract top 30 candidates for mask labels
+        # 기존: 토큰마다 argsort 개별 호출 → 느리고 CPU 전송 반복
+        top_k = torch.argsort(-masked_output, dim=1)[:, :self.num_candidates]  # 한 번에 처리
+        match = (top_k == masked_label.unsqueeze(1)).any(dim=1)
+        num_undetected_tokens = (~match).sum().item()
+        return num_undetected_tokens, [[], masked_label.cpu().numpy()]
 
-            if token not in torch.argsort(-masked_output[i])[:self.num_candidates]:
-                num_undetected_tokens += 1
-
-        return num_undetected_tokens, [output_maskes, masked_label.cpu().numpy()]
 
     @staticmethod
-    def generate_test(output_dir, file_name, window_size, adaptive_window, seq_len, scale, min_len):
+    def generate_test(output_dir, file_name, window_size, adaptive_window, seq_len, scale, min_len, chunk_size=5000):
         """
         :return: log_seqs: num_samples x session(seq)_length, tim_seqs: num_samples x session_length
         """
         log_seqs = []
         tim_seqs = []
         with open(output_dir + file_name, "r") as f:
-            for idx, line in tqdm(enumerate(f.readlines())):
+            for idx, line in tqdm(enumerate(f)):
                 #if idx > 40: break
                 log_seq, tim_seq = fixed_window(line, window_size,
                                                 adaptive_window=adaptive_window,
@@ -117,6 +126,14 @@ class Predictor():
 
                 log_seqs += log_seq
                 tim_seqs += tim_seq
+
+                if len(log_seqs) >= chunk_size:
+                    yield log_seqs[:chunk_size], tim_seqs[:chunk_size]
+                    log_seqs = log_seqs[chunk_size:]
+                    tim_seqs = tim_seqs[chunk_size:]
+
+        if log_seqs:
+            yield log_seqs, tim_seqs
 
         # sort seq_pairs by seq len
         fixed = []
@@ -153,101 +170,211 @@ class Predictor():
         print(f"{file_name} size: {len(log_seqs)}")
         return log_seqs, tim_seqs
 
+    # def helper(self, model, output_dir, file_name, vocab, scale=None, error_dict=None):
+    #     total_results = []
+    #     total_errors = []
+    #     output_results = []
+    #     total_dist = []
+    #     output_cls = []
+
+    #     part = 0
+
+    #     logkey_test, time_test = self.generate_test(output_dir, file_name, self.window_size, self.adaptive_window, self.seq_len, scale, self.min_len)
+
+    #     # use 1/10 test data
+    #     if self.test_ratio != 1:
+    #         num_test = len(logkey_test)
+    #         rand_index = torch.randperm(num_test)
+    #         rand_index = rand_index[:int(num_test * self.test_ratio)] if isinstance(self.test_ratio, float) else rand_index[:self.test_ratio]
+    #         logkey_test, time_test = logkey_test[rand_index], time_test[rand_index]
+
+
+    #     seq_dataset = LogDataset(logkey_test, time_test, vocab, seq_len=self.seq_len,
+    #                              corpus_lines=self.corpus_lines, on_memory=self.on_memory, predict_mode=True, mask_ratio=self.mask_ratio)
+
+    #     # use large batch size in test data
+    #     data_loader = DataLoader(seq_dataset, batch_size=self.batch_size, num_workers=1,
+    #                              collate_fn=seq_dataset.collate_fn)
+
+    #     for idx, data in enumerate(data_loader):
+    #         data = {key: value.to(self.device) for key, value in data.items()}
+
+    #         result = model(data["bert_input"], data["time_input"])
+
+    #         # mask_lm_output, mask_tm_output: batch_size x session_size x vocab_size
+    #         # cls_output: batch_size x hidden_size
+    #         # bert_label, time_label: batch_size x session_size
+    #         # in session, some logkeys are masked
+
+    #         mask_lm_output, mask_tm_output = result["logkey_output"], result["time_output"]
+    #         # output_cls += result["cls_output"].tolist()
+
+    #         # dist = torch.sum((result["cls_output"] - self.hyper_center) ** 2, dim=1)
+    #         # when visualization no mask
+    #         # continue
+
+    #         # loop though each session in batch
+    #         for i in range(len(data["bert_label"])):
+    #             seq_results = {"num_error": 0,
+    #                            "undetected_tokens": 0,
+    #                            "masked_tokens": 0,
+    #                            "total_logkey": torch.sum(data["bert_input"][i] > 0).item(),
+    #                            "deepSVDD_label": 0
+    #                            }
+
+    #             mask_index = data["bert_label"][i] > 0
+    #             num_masked = torch.sum(mask_index).tolist()
+    #             seq_results["masked_tokens"] = num_masked
+
+    #             if self.is_logkey:
+    #                 num_undetected, output_seq = self.detect_logkey_anomaly(
+    #                     mask_lm_output[i][mask_index], data["bert_label"][i][mask_index])
+    #                 seq_results["undetected_tokens"] = num_undetected
+
+    #                 output_results.append(output_seq)
+
+    #             if self.hypersphere_loss_test:
+    #                 # detect by deepSVDD distance
+    #                 assert result["cls_output"][i].size() == self.center.size()
+    #                 # dist = torch.sum((result["cls_fnn_output"][i] - self.center) ** 2)
+    #                 dist = torch.sqrt(torch.sum((result["cls_output"][i] - self.center) ** 2))
+    #                 #total_dist.append(dist.item())
+
+    #                 # user defined threshold for deepSVDD_label
+    #                 seq_results["deepSVDD_label"] = int(dist.item() > self.radius)
+    #                 #
+    #                 # if dist > 0.25:
+    #                 #     pass
+
+    #             if idx < 10 or idx % 1000 == 0:
+    #                 print(
+    #                     "{}, #time anomaly: {} # of undetected_tokens: {}, # of masked_tokens: {} , "
+    #                     "# of total logkey {}, deepSVDD_label: {} \n".format(
+    #                         file_name,
+    #                         seq_results["num_error"],
+    #                         seq_results["undetected_tokens"],
+    #                         seq_results["masked_tokens"],
+    #                         seq_results["total_logkey"],
+    #                         seq_results['deepSVDD_label']
+    #                     )
+    #                 )
+    #             total_results.append(seq_results)
+
+    #             if len(total_results) >= 10000:
+    #                 save_path = self.model_dir + f"{file_name}_results_part_{part:03d}.pkl"
+
+    #                 with open(save_path, "wb") as f:
+    #                     pickle.dump(total_results, f)
+
+    #                 print(f"Saved chunk {part} → {save_path}")
+
+    #                 total_results = []
+    #                 part += 1
+    #                 output_results = []
+    #                 total_dist = []
+    #                 gc.collect()
+
+    #     if len(total_results) > 0:
+    #         save_path = self.model_dir + f"{file_name}_results_part_{part:03d}.pkl"
+
+    #         with open(save_path, "wb") as f:
+    #             pickle.dump(total_results, f)
+
+    #         print(f"Saved final chunk {part} → {save_path}")
+    #     # for time
+    #     # return total_results, total_errors
+
+    #     #for logkey
+    #     # return total_results, output_result
+
+    #     # for hypersphere distance
+    #     return total_results, []
+
     def helper(self, model, output_dir, file_name, vocab, scale=None, error_dict=None):
         total_results = []
-        total_errors = []
-        output_results = []
-        total_dist = []
-        output_cls = []
-        logkey_test, time_test = self.generate_test(output_dir, file_name, self.window_size, self.adaptive_window, self.seq_len, scale, self.min_len)
+        part = 0
 
-        # use 1/10 test data
-        if self.test_ratio != 1:
-            num_test = len(logkey_test)
-            rand_index = torch.randperm(num_test)
-            rand_index = rand_index[:int(num_test * self.test_ratio)] if isinstance(self.test_ratio, float) else rand_index[:self.test_ratio]
-            logkey_test, time_test = logkey_test[rand_index], time_test[rand_index]
+        for log_chunk, tim_chunk in self.generate_test(output_dir, file_name,
+                                                    self.window_size, self.adaptive_window,
+                                                    self.seq_len, scale, self.min_len,
+                                                    chunk_size=5000):
+            fixed_log, fixed_time = [], []
+            for log_seq, time_seq in zip(log_chunk, tim_chunk):
+                log_seq, time_seq = list(log_seq), list(time_seq)
+                if len(log_seq) >= self.window_size:
+                    log_seq = log_seq[:self.window_size]
+                    time_seq = time_seq[:self.window_size]
+                else:
+                    pad_len = self.window_size - len(log_seq)
+                    log_seq = log_seq + [0] * pad_len
+                    time_seq = time_seq + [0] * pad_len
+                fixed_log.append(log_seq)
+                fixed_time.append(time_seq)
 
+            logkey_test = np.array(fixed_log)
+            tim_test = np.array(fixed_time)
 
-        seq_dataset = LogDataset(logkey_test, time_test, vocab, seq_len=self.seq_len,
-                                 corpus_lines=self.corpus_lines, on_memory=self.on_memory, predict_mode=True, mask_ratio=self.mask_ratio)
+            seq_dataset = LogDataset(logkey_test, tim_test, vocab, seq_len=self.seq_len,
+                                 corpus_lines=self.corpus_lines, on_memory=self.on_memory,
+                                 predict_mode=True, mask_ratio=self.mask_ratio)
 
-        # use large batch size in test data
-        data_loader = DataLoader(seq_dataset, batch_size=self.batch_size, num_workers=self.num_workers,
+            data_loader = DataLoader(seq_dataset, batch_size=self.batch_size,
+                                 num_workers=self.num_workers,
                                  collate_fn=seq_dataset.collate_fn)
 
-        for idx, data in enumerate(data_loader):
-            data = {key: value.to(self.device) for key, value in data.items()}
+            for idx, data in enumerate(data_loader):
+                data = {key: value.to(self.device) for key, value in data.items()}
 
-            result = model(data["bert_input"], data["time_input"])
+                with torch.no_grad():
+                    result = model(data["bert_input"], data["time_input"])
 
-            # mask_lm_output, mask_tm_output: batch_size x session_size x vocab_size
-            # cls_output: batch_size x hidden_size
-            # bert_label, time_label: batch_size x session_size
-            # in session, some logkeys are masked
+                mask_lm_output = result["logkey_output"]
 
-            mask_lm_output, mask_tm_output = result["logkey_output"], result["time_output"]
-            output_cls += result["cls_output"].tolist()
-
-            # dist = torch.sum((result["cls_output"] - self.hyper_center) ** 2, dim=1)
-            # when visualization no mask
-            # continue
-
-            # loop though each session in batch
-            for i in range(len(data["bert_label"])):
-                seq_results = {"num_error": 0,
-                               "undetected_tokens": 0,
+                for i in range(len(data["bert_label"])):
+                    seq_results = {"num_error": 0, "undetected_tokens": 0,
                                "masked_tokens": 0,
                                "total_logkey": torch.sum(data["bert_input"][i] > 0).item(),
-                               "deepSVDD_label": 0
-                               }
+                               "deepSVDD_label": 0}
 
-                mask_index = data["bert_label"][i] > 0
-                num_masked = torch.sum(mask_index).tolist()
-                seq_results["masked_tokens"] = num_masked
+                    mask_index = data["bert_label"][i] > 0
+                    seq_results["masked_tokens"] = torch.sum(mask_index).tolist()
 
-                if self.is_logkey:
-                    num_undetected, output_seq = self.detect_logkey_anomaly(
-                        mask_lm_output[i][mask_index], data["bert_label"][i][mask_index])
-                    seq_results["undetected_tokens"] = num_undetected
+                    if self.is_logkey:
+                        num_undetected, _ = self.detect_logkey_anomaly(
+                            mask_lm_output[i][mask_index], data["bert_label"][i][mask_index])
+                        seq_results["undetected_tokens"] = num_undetected
 
-                    output_results.append(output_seq)
+                    if self.hypersphere_loss_test:
+                        dist = torch.sqrt(torch.sum((result["cls_output"][i] - self.center) ** 2))
+                        seq_results["deepSVDD_label"] = int(dist.item() > self.radius)
 
-                if self.hypersphere_loss_test:
-                    # detect by deepSVDD distance
-                    assert result["cls_output"][i].size() == self.center.size()
-                    # dist = torch.sum((result["cls_fnn_output"][i] - self.center) ** 2)
-                    dist = torch.sqrt(torch.sum((result["cls_output"][i] - self.center) ** 2))
-                    total_dist.append(dist.item())
+                    total_results.append(seq_results)
 
-                    # user defined threshold for deepSVDD_label
-                    seq_results["deepSVDD_label"] = int(dist.item() > self.radius)
-                    #
-                    # if dist > 0.25:
-                    #     pass
+                    if len(total_results) >= 10000:
+                        save_path = self.model_dir + f"{file_name}_results_part_{part:03d}.pkl"
+                        with open(save_path, "wb") as f:
+                            pickle.dump(total_results, f)
+                        print(f"Saved chunk {part} → {save_path}")
+                        total_results = []
+                        part += 1
+                        gc.collect()
 
-                if idx < 10 or idx % 1000 == 0:
-                    print(
-                        "{}, #time anomaly: {} # of undetected_tokens: {}, # of masked_tokens: {} , "
-                        "# of total logkey {}, deepSVDD_label: {} \n".format(
-                            file_name,
-                            seq_results["num_error"],
-                            seq_results["undetected_tokens"],
-                            seq_results["masked_tokens"],
-                            seq_results["total_logkey"],
-                            seq_results['deepSVDD_label']
-                        )
-                    )
-                total_results.append(seq_results)
+            del logkey_test, tim_test, seq_dataset, data_loader
+            gc.collect()
 
-        # for time
-        # return total_results, total_errors
+        if total_results:
+            save_path = self.model_dir + f"{file_name}_results_part_{part:03d}.pkl"
+            with open(save_path, "wb") as f:
+                pickle.dump(total_results, f)
+            print(f"Saved final chunk {part} → {save_path}")
 
-        #for logkey
-        # return total_results, output_results
+        all_results = []
+        for i in range(part + 1):
+            path = self.model_dir + f"{file_name}_results_part_{i:03d}.pkl"
+            with open(path, "rb") as f:
+                all_results += pickle.load(f)
 
-        # for hypersphere distance
-        return total_results, output_cls
+        return all_results, []
 
     def predict(self):
         model = torch.load(self.model_path, weights_only=False, map_location=self.device)
@@ -273,9 +400,9 @@ class Predictor():
             self.radius = center_dict["radius"]
             # self.center = self.center.view(1,-1)
 
-
         print("test normal predicting")
         test_normal_results, test_normal_errors = self.helper(model, self.output_dir, "test_normal", vocab, scale, error_dict)
+        print("test normal END!!")
 
         print("test abnormal predicting")
         test_abnormal_results, test_abnormal_errors = self.helper(model, self.output_dir, "test_abnormal", vocab, scale, error_dict)
@@ -288,13 +415,23 @@ class Predictor():
         with open(self.model_dir + "test_abnormal_results", "wb") as f:
             pickle.dump(test_abnormal_results, f)
 
-        print("Saving test normal errors")
-        with open(self.model_dir + "test_normal_errors.pkl", "wb") as f:
-            pickle.dump(test_normal_errors, f)
+        # print("Saving test normal errors")
+        # with open(self.model_dir + "test_normal_errors.pkl", "wb") as f:
+        #     pickle.dump(test_normal_errors, f)
 
-        print("Saving test abnormal results")
-        with open(self.model_dir + "test_abnormal_errors.pkl", "wb") as f:
-            pickle.dump(test_abnormal_errors, f)
+        # print("Saving test abnormal results")
+        # with open(self.model_dir + "test_abnormal_errors.pkl", "wb") as f:
+        #     pickle.dump(test_abnormal_errors, f)
+
+        if test_normal_errors is not None:
+            print("Saving test normal errors")
+            with open(self.model_dir + "test_normal_errors.pkl", "wb") as f:
+                pickle.dump(test_normal_errors, f)
+
+        if test_abnormal_errors is not None:
+            print("Saving test abnormal errors")
+            with open(self.model_dir + "test_abnormal_errors.pkl", "wb") as f:
+                pickle.dump(test_abnormal_errors, f)
 
         params = {"is_logkey": self.is_logkey, "is_time": self.is_time, "hypersphere_loss": self.hypersphere_loss,
                   "hypersphere_loss_test": self.hypersphere_loss_test}
