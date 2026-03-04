@@ -6,6 +6,7 @@ import pickle
 import time
 import torch
 from tqdm import tqdm
+tqdm.disable = True
 from torch.utils.data import DataLoader
 
 from bert_pytorch.dataset import WordVocab
@@ -118,8 +119,30 @@ class Predictor():
                 tim_seqs += tim_seq
 
         # sort seq_pairs by seq len
-        log_seqs = np.array(log_seqs)
-        tim_seqs = np.array(tim_seqs)
+        fixed = []
+        fixed_log = []
+        fixed_time = []
+
+        for log_seq, time_seq in zip(log_seqs, tim_seqs):
+
+            log_seq = list(log_seq)
+            time_seq = list(time_seq)
+
+            if len(log_seq) >= window_size:
+                log_seq = log_seq[:window_size]
+                time_seq = time_seq[:window_size]
+
+            else:
+                pad_len = window_size - len(log_seq)
+
+                log_seq = log_seq + [0] * pad_len
+                time_seq = time_seq + [0] * pad_len
+
+            fixed_log.append(log_seq)
+            fixed_time.append(time_seq)
+
+        log_seqs = np.array(fixed_log)
+        tim_seqs = np.array(fixed_time)
 
         test_len = list(map(len, log_seqs))
         test_sort_index = np.argsort(-1 * np.array(test_len))
@@ -227,7 +250,7 @@ class Predictor():
         return total_results, output_cls
 
     def predict(self):
-        model = torch.load(self.model_path)
+        model = torch.load(self.model_path, weights_only=False, map_location=self.device)
         model.to(self.device)
         model.eval()
         print('model_path: {}'.format(self.model_path))
@@ -245,7 +268,7 @@ class Predictor():
                 error_dict = pickle.load(f)
 
         if self.hypersphere_loss:
-            center_dict = torch.load(self.model_dir + "best_center.pt")
+            center_dict = torch.load(self.model_dir + "best_center.pt", weights_only=False)
             self.center = center_dict["center"]
             self.radius = center_dict["radius"]
             # self.center = self.center.view(1,-1)

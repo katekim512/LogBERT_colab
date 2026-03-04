@@ -129,3 +129,10 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+output/
+data/
+__pycache__/
+*.pt
+*.pth
+*.pkl
+*.tar.gz

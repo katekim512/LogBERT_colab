@@ -87,8 +87,30 @@ def generate_train_valid(data_path, window_size=20, adaptive_window=True,
         logkey_seq_pairs += logkeys
         time_seq_pairs += times
 
-    logkey_seq_pairs = np.array(logkey_seq_pairs)
-    time_seq_pairs = np.array(time_seq_pairs)
+    fixed = []
+    for seq in logkey_seq_pairs:
+        seq = list(seq)
+
+        if len(seq) >= window_size:
+            seq = seq[:window_size]
+        else:
+            seq = seq + [0] * (window_size - len(seq))
+
+        fixed.append(seq)
+
+    logkey_seq_pairs = np.array(fixed)
+    fixed_t = []
+    for seq in time_seq_pairs:
+        seq = list(seq)
+
+        if len(seq) >= window_size:
+            seq = seq[:window_size]
+        else:
+            seq = seq + [0] * (window_size - len(seq))
+
+        fixed_t.append(seq)
+
+    time_seq_pairs = np.array(fixed_t)
 
     logkey_trainset, logkey_validset, time_trainset, time_validset = train_test_split(logkey_seq_pairs,
                                                                                       time_seq_pairs,
