@@ -8,7 +8,7 @@ import pandas as pd
 from collections import defaultdict
 from tqdm import tqdm
 import numpy as np
-from logparser import Spell, Drain
+from logparser import Spell, Drain, IPLoM
 
 # get [log key, delta time] as input for deeplog
 input_dir  = os.path.expanduser('/content/.dataset/hdfs/')
@@ -50,9 +50,21 @@ def parser(input_dir, output_dir, log_file, log_format, type='drain'):
         # the hyper parameter is set according to http://jmzhu.logpai.com/pub/pjhe_icws2017.pdf
         st = 0.5  # Similarity threshold
         depth = 5  # Depth of all leaf nodes
-
-
         parser = Drain.LogParser(log_format, indir=input_dir, outdir=output_dir, depth=depth, st=st, rex=regex, keep_para=False)
+        parser.parse(log_file)
+
+    elif type == 'iplom':
+        regex = [
+            r"(/[-\w]+)+",
+            r"(?<=blk_)[-\d]+"
+        ]
+        parser = IPLoM.LogParser(
+            log_format=log_format,
+            indir=input_dir,
+            outdir=output_dir,
+            rex=regex
+        )
+
         parser.parse(log_file)
 
 
@@ -116,7 +128,7 @@ def df_to_file(df, file_name):
 if __name__ == "__main__":
     # 1. parse HDFS log
     log_format = '<Date> <Time> <Pid> <Level> <Component>: <Content>'  # HDFS log format
-    parser(input_dir, output_dir, log_file, log_format, 'spell')
+    parser(input_dir, output_dir, log_file, log_format, 'drain')
     mapping()
     hdfs_sampling(log_structured_file)
     generate_train_test(log_sequence_file, n=4855)
