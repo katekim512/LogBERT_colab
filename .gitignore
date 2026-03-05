@@ -1,6 +1,9 @@
 output/
-*.pkl
+data/
+__pycache__/
 *.pt
 *.pth
-__pycache__/
-*.pyc
+*.pkl
+*.tar.gz
+logparser/DivLog/embeddings/
+logparser/DivLog/results/
