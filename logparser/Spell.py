@@ -315,7 +315,7 @@ class LogParser:
         regex = ''
         for k in range(len(splitters)):
             if k % 2 == 0:
-                splitter = re.sub(' +', '\\\s+', splitters[k]) #re.sub(' +', '\s+', splitters[k])
+                splitter = re.sub(' +', r'\\s+', splitters[k]) #re.sub(' +', '\s+', splitters[k])
 
                 regex += splitter
             else:
