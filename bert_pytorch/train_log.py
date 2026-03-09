@@ -96,8 +96,6 @@ class Trainer():
         gc.collect()
 
         print("Building BERT model")
-        
-        # --- [추가 시작] SBERT 가중치 로드 로직 ---
         # generate_sbert_weights.py에서 저장한 경로와 일치해야 합니다.
         sbert_path = os.path.join(self.output_path, "sbert_weights.npy")
         sbert_weights = None
@@ -107,7 +105,6 @@ class Trainer():
             sbert_weights = np.load(sbert_path)
         else:
             print("⚠️ SBERT weights not found. Using random initialization.")
-        # --- [추가 끝] ---
 
         # BERT 생성 시 sbert_weights 인자 추가
         bert = BERT(len(vocab), 
