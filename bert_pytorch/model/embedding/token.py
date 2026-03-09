@@ -1,5 +1,5 @@
 import torch.nn as nn
-
+import torch
 
 class TokenEmbedding(nn.Embedding):
     def __init__(self, vocab_size, embed_size=512, sbert_weights=None):
