@@ -1,3 +1,6 @@
+import numpy as np
+import os
+
 from torch.utils.data import DataLoader
 from bert_pytorch.model import BERT
 from bert_pytorch.trainer import BERTTrainer
@@ -93,8 +96,28 @@ class Trainer():
         gc.collect()
 
         print("Building BERT model")
-        bert = BERT(len(vocab), max_len=self.max_len, hidden=self.hidden, n_layers=self.layers, attn_heads=self.attn_heads,
-                    is_logkey=self.is_logkey, is_time=self.is_time)
+        
+        # --- [추가 시작] SBERT 가중치 로드 로직 ---
+        # generate_sbert_weights.py에서 저장한 경로와 일치해야 합니다.
+        sbert_path = os.path.join(self.output_path, "sbert_weights.npy")
+        sbert_weights = None
+        
+        if os.path.exists(sbert_path):
+            print(f"Loading SBERT weights from {sbert_path}")
+            sbert_weights = np.load(sbert_path)
+        else:
+            print("⚠️ SBERT weights not found. Using random initialization.")
+        # --- [추가 끝] ---
+
+        # BERT 생성 시 sbert_weights 인자 추가
+        bert = BERT(len(vocab), 
+                    max_len=self.max_len, 
+                    hidden=self.hidden, 
+                    n_layers=self.layers, 
+                    attn_heads=self.attn_heads,
+                    is_logkey=self.is_logkey, 
+                    is_time=self.is_time,
+                    sbert_weights=sbert_weights) # 이 부분 추가
 
         print("Creating BERT Trainer")
         self.trainer = BERTTrainer(bert, len(vocab), train_dataloader=self.train_data_loader, valid_dataloader=self.valid_data_loader,

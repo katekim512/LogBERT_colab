@@ -9,7 +9,8 @@ class BERT(nn.Module):
     BERT model : Bidirectional Encoder Representations from Transformers.
     """
 
-    def __init__(self, vocab_size, max_len=512, hidden=768, n_layers=12, attn_heads=12, dropout=0.1, is_logkey=True, is_time=False):
+    def __init__(self, vocab_size, hidden=768, n_layers=12, attn_heads=12, dropout=0.1, 
+                 max_len=512, is_logkey=True, is_time=False, sbert_weights=None): # sbert_weights 추가
         """
         :param vocab_size: vocab_size of total words
         :param hidden: BERT model hidden size
@@ -27,7 +28,10 @@ class BERT(nn.Module):
         self.feed_forward_hidden = hidden * 2
 
         # embedding for BERT, sum of positional, segment, token embeddings
-        self.embedding = BERTEmbedding(vocab_size=vocab_size, embed_size=hidden, max_len=max_len, is_logkey=is_logkey, is_time=is_time)
+        # BERTEmbedding 생성 시 sbert_weights 전달
+        self.embedding = BERTEmbedding(vocab_size=vocab_size, embed_size=hidden, max_len=max_len, 
+                                       is_logkey=is_logkey, is_time=is_time, 
+                                       sbert_weights=sbert_weights) # 추가
 
         # multi-layers transformer blocks, deep network
         self.transformer_blocks = nn.ModuleList(
