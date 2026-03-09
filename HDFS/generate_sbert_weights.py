@@ -1,3 +1,12 @@
+import sys
+import os
+
+# 1. 파이썬이 bert_pytorch 모듈을 찾을 수 있도록 경로 등록
+# Colab 환경의 프로젝트 루트 경로를 가장 먼저 추가합니다.
+current_dir = os.getcwd() # 현재 실행 경로
+sys.path.append(current_dir) 
+sys.path.append('/content/LogBERT_colab')
+
 import pickle
 import pandas as pd
 import numpy as np
@@ -8,25 +17,34 @@ import os
 
 def generate_weights():
     # 1. 경로 설정 
-    vocab_path = 'output/hdfs/vocab.pkl'
-    template_csv_path = 'output/hdfs/HDFS.log_templates.csv'
-    output_dir = 'output/hdfs/'
+    vocab_path = '/content/LogBERT_colab/output/hdfs/vocab.pkl'
+    template_csv_path = '/content/LogBERT_colab/output/hdfs/HDFS.log_templates.csv'
+    output_dir = '/content/LogBERT_colab/output/hdfs/'
     output_path = os.path.join(output_dir, 'sbert_weights.npy')
 
     # 2. Vocab 로드 ( stoi: String to Index )
     with open(vocab_path, 'rb') as f:
         vocab = pickle.load(f)
     
-    # 3. SBERT 모델 로드 (MiniLM은 384차원)
-    print("Loading SBERT model...")
-    sbert_model = SentenceTransformer('all-MiniLM-L6-v2') 
+    # 3. SBERT 모델 구성 (순서가 중요합니다!)
+    print("Loading SBERT model and adding Dense layer for 256 dim...")
+    
+    # 1) Transformer 레이어 정의 (384차원 베이스)
+    word_embedding_model = models.Transformer('sentence-transformers/all-MiniLM-L6-v2')
+    
+    # 2) Pooling 레이어 정의 (문장 벡터화 방식 결정)
+    # 이 줄이 dense_model보다 위에 있어야 합니다!
+    pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
+    
+    # 3) Dense 레이어 정의 (384 -> 256 차원 축소)
+    dense_model = models.Dense(
+        in_features=pooling_model.get_sentence_embedding_dimension(), 
+        out_features=256, 
+        activation_function=torch.nn.Identity()
+    )
 
-    dense_model = models.Dense(in_features=pooling_model.get_sentence_embedding_dimension(), 
-                               out_features=256, 
-                               activation_model=torch.nn.Identity())
-
+    # 4) 모든 모듈을 합쳐서 하나의 모델로 생성
     sbert_model = SentenceTransformer(modules=[word_embedding_model, pooling_model, dense_model])
-
     
     # 4. 템플릿 데이터 로드
     df_temp = pd.read_csv(template_csv_path)
