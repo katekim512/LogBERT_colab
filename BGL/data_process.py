@@ -5,7 +5,7 @@ import os
 import gc
 import pandas as pd
 import numpy as np
-from logparser import Spell, Drain
+from logparser import Spell, Drain, IPLoM
 import argparse
 from tqdm import tqdm
 from logdeep.dataset.session import sliding_window
@@ -17,10 +17,9 @@ PAD = 0
 UNK = 1
 START = 2
 
-data_dir = os.path.expanduser("~/.dataset/bgl")
-output_dir = "../output/bgl/"
+data_dir = os.path.expanduser("/content/.dataset/bgl/") 
+output_dir = "../output/bgl/" 
 log_file = "BGL.log"
-
 
 # In the first column of the log, "-" indicates non-alert messages while others are alert messages.
 def count_anomaly():
@@ -80,6 +79,9 @@ def parse_log(input_dir, output_dir, log_file, parser_type):
     elif parser_type == "spell":
         tau = 0.55
         parser = Spell.LogParser(indir=data_dir, outdir=output_dir, log_format=log_format, tau=tau, rex=regex, keep_para=keep_para)
+        parser.parse(log_file)
+    elif parser_type == "iplom":
+        parser = IPLoM.LogParser(log_format=log_format, indir=input_dir, outdir=output_dir, rex=regex)
         parser.parse(log_file)
 
 #
