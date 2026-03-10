@@ -7,6 +7,7 @@ import torch
 from sentence_transformers import SentenceTransformer, models
 from tqdm import tqdm
 
+current_dir = os.getcwd()
 sys.path.append(current_dir) 
 sys.path.append('/content/LogBERT_colab')
 
