@@ -25,15 +25,29 @@ def generate_weights_bgl():
         vocab = pickle.load(f)
     
     print("Loading SBERT model...")
-    word_embedding_model = models.Transformer('sentence-transformers/all-MiniLM-L6-v2')
+    word_embedding_model = models.Transformer('sentence-transformers/all-mpnet-base-v2')
     pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
-    dense_model = models.Dense(
-        in_features=pooling_model.get_sentence_embedding_dimension(), 
-        out_features=256, 
-        activation_function=torch.nn.Identity()
+    dense_layer1 = models.Dense(
+        in_features=pooling_model.get_sentence_embedding_dimension(), # 768
+        out_features=512, 
+        activation_function=torch.nn.GELU() 
     )
 
-    sbert_model = SentenceTransformer(modules=[word_embedding_model, pooling_model, dense_model])
+    # 두 번째 층: 최종적으로 LogBERT의 입력 차원인 256으로 맞춤
+    dense_layer2 = models.Dense(
+        in_features=512, 
+        out_features=256, 
+        activation_function=torch.nn.Identity() # 마지막은 선형적으로 유지
+    )
+
+    # 4) 모든 모듈을 합쳐서 하나의 모델로 생성
+    # dense_model 대신 dense_layer1, dense_layer2를 순서대로 넣습니다.
+    sbert_model = SentenceTransformer(modules=[
+        word_embedding_model, 
+        pooling_model, 
+        dense_layer1, 
+        dense_layer2
+    ])
     
     df_temp = pd.read_csv(template_csv_path)
     id_to_template = dict(zip(df_temp['EventId'], df_temp['EventTemplate']))
