@@ -26,25 +26,31 @@ def generate_weights():
     with open(vocab_path, 'rb') as f:
         vocab = pickle.load(f)
     
-    # 3. SBERT 모델 구성 (순서가 중요합니다!)
-    print("Loading SBERT model and adding Dense layer for 256 dim...")
-    
-    # 1) Transformer 레이어 정의 (384차원 베이스)
-    word_embedding_model = models.Transformer('sentence-transformers/all-MiniLM-L6-v2')
-    
-    # 2) Pooling 레이어 정의 (문장 벡터화 방식 결정)
-    # 이 줄이 dense_model보다 위에 있어야 합니다!
+    # 3. SBERT 모델 구성 
+    print("Loading SBERT model...")
+    word_embedding_model = models.Transformer('sentence-transformers/all-mpnet-base-v2')
     pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
-    
-    # 3) Dense 레이어 정의 (384 -> 256 차원 축소)
-    dense_model = models.Dense(
-        in_features=pooling_model.get_sentence_embedding_dimension(), 
+    dense_layer1 = models.Dense(
+        in_features=pooling_model.get_sentence_embedding_dimension(), # 768
+        out_features=512, 
+        activation_function=torch.nn.GELU() 
+    )
+
+    # 두 번째 층: 최종적으로 LogBERT의 입력 차원인 256으로 맞춤
+    dense_layer2 = models.Dense(
+        in_features=512, 
         out_features=256, 
-        activation_function=torch.nn.Identity()
+        activation_function=torch.nn.Identity() # 마지막은 선형적으로 유지
     )
 
     # 4) 모든 모듈을 합쳐서 하나의 모델로 생성
-    sbert_model = SentenceTransformer(modules=[word_embedding_model, pooling_model, dense_model])
+    # dense_model 대신 dense_layer1, dense_layer2를 순서대로 넣습니다.
+    sbert_model = SentenceTransformer(modules=[
+        word_embedding_model, 
+        pooling_model, 
+        dense_layer1, 
+        dense_layer2
+    ])
     
     # 4. 템플릿 데이터 로드
     df_temp = pd.read_csv(template_csv_path)
