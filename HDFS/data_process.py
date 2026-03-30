@@ -8,6 +8,7 @@ import pandas as pd
 from collections import defaultdict
 from tqdm import tqdm
 import numpy as np
+import ast
 from logparser import Spell, Drain, IPLoM
 
 # get [log key, delta time] as input for deeplog
@@ -18,6 +19,36 @@ log_file   = "HDFS.log"  # The input log file name
 log_structured_file = output_dir + log_file + "_structured.csv"
 log_templates_file = output_dir + log_file + "_templates.csv"
 log_sequence_file = output_dir + "hdfs_sequence.csv"
+
+def rle_count_seq(seq):
+    """
+    Run-length encoding count expanded back to per-position counts.
+    Example: [1,1,2,2,2,5] -> [2,2,3,3,3,1]
+    """
+    if not seq:
+        return []
+
+    out = []
+    i = 0
+    n = len(seq)
+    while i < n:
+        v = seq[i]
+        j = i + 1
+        while j < n and seq[j] == v:
+            j += 1
+        run_len = j - i
+        out.extend([run_len] * run_len)
+        i = j
+    return out
+
+
+def parse_event_sequence(row):
+    # EventSequence is stored as a stringified python list in generated CSV.
+    if isinstance(row, list):
+        return row
+    if isinstance(row, str):
+        return ast.literal_eval(row)
+    return ast.literal_eval(str(row))
 
 def mapping():
     log_temp = pd.read_csv(log_templates_file)
@@ -112,17 +143,24 @@ def generate_train_test(hdfs_sequence_file, n=None, ratio=0.3):
     test_normal = normal_seq.iloc[train_len:]
     test_abnormal = abnormal_seq
 
-    df_to_file(train, output_dir + "train")
-    df_to_file(test_normal, output_dir + "test_normal")
-    df_to_file(test_abnormal, output_dir + "test_abnormal")
+    df_to_files(train, output_dir + "train", output_dir + "train_freq")
+    df_to_files(test_normal, output_dir + "test_normal", output_dir + "test_normal_freq")
+    df_to_files(test_abnormal, output_dir + "test_abnormal", output_dir + "test_abnormal_freq")
     print("generate train test data done")
 
 
-def df_to_file(df, file_name):
-    with open(file_name, 'w') as f:
+def df_to_files(df, token_file_name, freq_file_name):
+    with open(token_file_name, 'w') as f_tok, open(freq_file_name, 'w') as f_freq:
         for _, row in df.items():
-            f.write(' '.join([str(ele) for ele in eval(row)]))
-            f.write('\n')
+            seq = parse_event_sequence(row)
+            # 1) token sequence (LogID / template ID)
+            f_tok.write(' '.join([str(ele) for ele in seq]))
+            f_tok.write('\n')
+
+            # 2) frequency sequence: per-position expanded run-length counts
+            freq_seq = rle_count_seq(seq)
+            f_freq.write(' '.join([str(ele) for ele in freq_seq]))
+            f_freq.write('\n')
 
 
 if __name__ == "__main__":
