@@ -45,6 +45,7 @@ class Trainer():
         self.attn_heads = options["attn_heads"]
         self.is_logkey = options["is_logkey"]
         self.is_time = options["is_time"]
+        self.is_freq = options.get("is_freq", False)
         self.scale = options["scale"]
         self.scale_path = options["scale_path"]
         self.n_epochs_stop = options["n_epochs_stop"]
@@ -114,6 +115,7 @@ class Trainer():
                     attn_heads=self.attn_heads,
                     is_logkey=self.is_logkey, 
                     is_time=self.is_time,
+                    is_freq=self.is_freq,
                     sbert_weights=sbert_weights) # 이 부분 추가
 
         print("Creating BERT Trainer")

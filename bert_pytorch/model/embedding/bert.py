@@ -4,6 +4,7 @@ from .token import TokenEmbedding
 from .position import PositionalEmbedding
 from .segment import SegmentEmbedding
 from .time_embed import TimeEmbedding
+from .freq_embed import FreqEmbedding
 
 class BERTEmbedding(nn.Module):
     """
@@ -15,7 +16,7 @@ class BERTEmbedding(nn.Module):
         sum of all these features are output of BERTEmbedding
     """
 
-    def __init__(self, vocab_size, embed_size, max_len, dropout=0.1, is_logkey=True, is_time=False, sbert_weights=None):
+    def __init__(self, vocab_size, embed_size, max_len, dropout=0.1, is_logkey=True, is_time=False, is_freq=False, sbert_weights=None):
         """
         :param vocab_size: total vocab size
         :param embed_size: embedding size of token embedding
@@ -27,10 +28,12 @@ class BERTEmbedding(nn.Module):
         self.position = PositionalEmbedding(d_model=self.token.embedding_dim, max_len=max_len)
         self.segment = SegmentEmbedding(embed_size=self.token.embedding_dim)
         self.time_embed = TimeEmbedding(embed_size=self.token.embedding_dim)
+        self.freq_embed = FreqEmbedding(embed_size=self.token.embedding_dim)
         self.dropout = nn.Dropout(p=dropout)
         self.embed_size = embed_size
         self.is_logkey = is_logkey
         self.is_time = is_time
+        self.is_freq = is_freq
 
     def forward(self, sequence, segment_label=None, time_info=None):
         x = self.position(sequence)
@@ -40,4 +43,8 @@ class BERTEmbedding(nn.Module):
             x = x + self.segment(segment_label)
         if self.is_time:
             x = x + self.time_embed(time_info)
+        # Frequency uses the same scalar tensor that is currently passed via `time_info`
+        # to avoid changing the dataset interface in this step.
+        if self.is_freq:
+            x = x + self.freq_embed(time_info)
         return self.dropout(x)

@@ -1,6 +1,7 @@
 from tqdm import tqdm
 import numpy as np
 from sklearn.model_selection import train_test_split
+import os
 
 
 def generate_pairs(line, window_size):
@@ -55,11 +56,77 @@ def fixed_window(line, window_size, adaptive_window, seq_len=None, min_len=0):
     return logkey_seqs, time_seq
 
 
+def fixed_window_with_freq(log_line, freq_line, window_size, adaptive_window, seq_len=None, min_len=0):
+    """
+    log_line: whitespace-separated LogID tokens (e.g., "12 15 15 2 ...")
+    freq_line: whitespace-separated per-token frequency counts aligned with log_line
+               (e.g., "1 1 2 1 ...")
+    """
+    log_tokens = log_line.strip().split()
+
+    if len(log_tokens) < min_len:
+        return [], []
+
+    if seq_len is not None:
+        log_tokens = log_tokens[:seq_len]
+
+    # For correctness: frequency (run-length) must be computed on the same
+    # truncated view that the model will see (global window_size).
+    if len(log_tokens) > window_size:
+        log_tokens = log_tokens[:window_size]
+
+    log_arr = np.array(log_tokens)
+
+    # When adaptive_window is enabled, treat the whole session as one window
+    # (but we already clamped it to global window_size above).
+    window_size_local = len(log_arr) if adaptive_window else window_size
+
+    def rle_count_seq(seq_1d):
+        """
+        Run-length encoding count expanded back to per-position counts.
+        Example: [1,1,2,2,2,5] -> [2,2,3,3,3,1]
+        """
+        if len(seq_1d) == 0:
+            return []
+        out = []
+        i = 0
+        n = len(seq_1d)
+        while i < n:
+            v = seq_1d[i]
+            j = i + 1
+            while j < n and seq_1d[j] == v:
+                j += 1
+            run_len = j - i
+            out.extend([run_len] * run_len)
+            i = j
+        return out
+
+    logkey_seqs = []
+    time_seq = []
+    for i in range(0, len(log_arr), window_size_local):
+        window_tokens = log_arr[i:i + window_size_local]
+        logkey_seqs.append(window_tokens)
+        time_seq.append(rle_count_seq(window_tokens))
+
+    return logkey_seqs, time_seq
+
+
 def generate_train_valid(data_path, window_size=20, adaptive_window=True,
                          sample_ratio=1, valid_size=0.1, output_path=None,
-                         scale=None, scale_path=None, seq_len=None, min_len=0):
+                         scale=None, scale_path=None, seq_len=None, min_len=0, freq_data_path=None):
+    freq_path = freq_data_path
+    if freq_path is None:
+        candidate = data_path + "_freq"
+        freq_path = candidate if os.path.exists(candidate) else None
+
     with open(data_path, 'r') as f:
         data_iter = f.readlines()
+    freq_iter = None
+    if freq_path is not None:
+        with open(freq_path, 'r') as ff:
+            freq_iter = ff.readlines()
+        if len(freq_iter) != len(data_iter):
+            raise ValueError(f"Frequency file length mismatch: {freq_path} vs {data_path}")
 
     num_session = int(len(data_iter) * sample_ratio)
     # only even number of samples, or drop_last=True in DataLoader API
@@ -78,12 +145,17 @@ def generate_train_valid(data_path, window_size=20, adaptive_window=True,
     logkey_seq_pairs = []
     time_seq_pairs = []
     session = 0
-    for line in tqdm(data_iter):
+    for idx, line in enumerate(tqdm(data_iter)):
         if session >= num_session:
             break
         session += 1
 
-        logkeys, times = fixed_window(line, window_size, adaptive_window, seq_len, min_len)
+        if freq_iter is not None:
+            logkeys, times = fixed_window_with_freq(
+                line, freq_iter[idx], window_size, adaptive_window, seq_len, min_len
+            )
+        else:
+            logkeys, times = fixed_window(line, window_size, adaptive_window, seq_len, min_len)
         logkey_seq_pairs += logkeys
         time_seq_pairs += times
 
