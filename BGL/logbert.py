@@ -38,6 +38,7 @@ options["test_ratio"] = 1
 # features
 options["is_logkey"] = True
 options["is_time"] = False
+options["is_freq"] = True
 
 options["hypersphere_loss"] = True
 options["hypersphere_loss_test"] = False

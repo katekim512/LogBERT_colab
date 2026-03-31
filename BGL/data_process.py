@@ -5,6 +5,7 @@ import os
 import gc
 import pandas as pd
 import numpy as np
+import ast
 from logparser import Spell, Drain, IPLoM
 import argparse
 from tqdm import tqdm
@@ -16,6 +17,42 @@ pd.options.mode.chained_assignment = None
 PAD = 0
 UNK = 1
 START = 2
+
+# 1. 상단에 RLE 카운트 함수 추가 (HDFS와 동일)
+def rle_count_seq(seq):
+    if not seq:
+        return []
+    out = []
+    i = 0
+    n = len(seq)
+    while i < n:
+        v = seq[i]
+        j = i + 1
+        while j < n and seq[j] == v:
+            j += 1
+        run_len = j - i
+        out.extend([run_len] * run_len)
+        i = j
+    return out
+
+# 2. 파일 생성기 수정 (token 파일과 freq 파일을 동시에 생성하도록)
+def deeplog_file_generator(filename, df, features):
+    # filename 뒤에 _freq를 붙여서 빈도 파일도 함께 생성
+    token_file = filename
+    freq_file = filename + "_freq"
+    
+    with open(token_file, 'w') as f_tok, open(freq_file, 'w') as f_freq:
+        for _, row in df.iterrows():
+            # EventId 시퀀스 추출 (리스트 형태라고 가정)
+            seq = row["EventId"]
+            
+            # 1) 토큰(LogID) 저장
+            f_tok.write(' '.join([str(v) for v in seq]) + '\n')
+            
+            # 2) 빈도(Frequency) 저장
+            freq_seq = rle_count_seq(seq)
+            f_freq.write(' '.join([str(v) for v in freq_seq]) + '\n')
+
 
 data_dir = os.path.expanduser("/content/.dataset/bgl/") 
 output_dir = "../output/bgl/" 
@@ -52,13 +89,6 @@ def count_anomaly():
 # def _custom_resampler(array_like):
 #     return list(array_like)
 
-
-def deeplog_file_generator(filename, df, features):
-    with open(filename, 'w') as f:
-        for _, row in df.iterrows():
-            for val in zip(*row[features]):
-                f.write(','.join([str(v) for v in val]) + ' ')
-            f.write('\n')
 
 
 def parse_log(input_dir, output_dir, log_file, parser_type):
