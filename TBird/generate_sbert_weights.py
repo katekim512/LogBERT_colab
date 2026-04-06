@@ -1,93 +1,26 @@
-import sys
 import os
-
-# 1. 파이썬이 bert_pytorch 모듈을 찾을 수 있도록 경로 등록
-# Colab 환경의 프로젝트 루트 경로를 가장 먼저 추가합니다.
-current_dir = os.getcwd() # 현재 실행 경로
-sys.path.append(current_dir) 
-sys.path.append('/content/LogBERT_colab')
-
 import pickle
-import pandas as pd
-import numpy as np
-import torch
-from sentence_transformers import SentenceTransformer, models
-from tqdm import tqdm
-import os
+import sys
+
+sys.path.append(os.getcwd())
+sys.path.append("/content/LogBERT_colab")
+
+from logdeep.dataset.semantic import build_sbert_weight_matrix
+
 
 def generate_weights():
-    # 1. 경로 설정 
-    vocab_path = '/content/LogBERT_colab/output/tbird/vocab.pkl'
-    template_csv_path = '/content/LogBERT_colab/output/tbird/Thunderbird_20M.log_templates.csv'
-    output_dir = '/content/LogBERT_colab/output/tbird/'
-    output_path = os.path.join(output_dir, 'sbert_weights.npy')
+    output_dir = "/content/LogBERT_colab/output/tbird/"
+    vocab_path = os.path.join(output_dir, "vocab.pkl")
+    semantic_catalog_path = os.path.join(output_dir, "semantic_id_catalog.csv")
+    semantic_vectors_path = os.path.join(output_dir, "semantic_id_vectors_256.npy")
+    output_path = os.path.join(output_dir, "sbert_weights.npy")
 
-    # 2. Vocab 로드 ( stoi: String to Index )
-    with open(vocab_path, 'rb') as f:
-        vocab = pickle.load(f)
-    
-    # 3. SBERT 모델 구성 
-    print("Loading SBERT model...")
-    word_embedding_model = models.Transformer('sentence-transformers/all-mpnet-base-v2')
-    pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
-    dense_layer1 = models.Dense(
-        in_features=pooling_model.get_sentence_embedding_dimension(), # 768
-        out_features=512, 
-        activation_function=torch.nn.GELU() 
-    )
+    with open(vocab_path, "rb") as handle:
+        vocab = pickle.load(handle)
 
-    # 두 번째 층: 최종적으로 LogBERT의 입력 차원인 256으로 맞춤
-    dense_layer2 = models.Dense(
-        in_features=512, 
-        out_features=256, 
-        activation_function=torch.nn.Identity() # 마지막은 선형적으로 유지
-    )
-
-    # 4) 모든 모듈을 합쳐서 하나의 모델로 생성
-    # dense_model 대신 dense_layer1, dense_layer2를 순서대로 넣습니다.
-    sbert_model = SentenceTransformer(modules=[
-        word_embedding_model, 
-        pooling_model, 
-        dense_layer1, 
-        dense_layer2
-    ])
-    
-    # 4. 템플릿 데이터 로드
-    df_temp = pd.read_csv(template_csv_path)
-    id_to_template = dict(zip(df_temp['EventId'], df_temp['EventTemplate']))
-
-    # 5. 가중치 행렬 초기화 [Vocab Size, 384]
-    sbert_dim = 256
-    weight_matrix = np.zeros((len(vocab), sbert_dim))
-    
-    print(f"Generating embeddings for {len(vocab)} tokens...")
-
-    # SBERT 연산 가속을 위해 모델을 GPU로 보냄 (가능할 경우)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    sbert_model.to(device)
-    
-    for word, idx in tqdm(vocab.stoi.items()):
-        # 특수 토큰 처리
-        if word in ['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]']:
-            weight_matrix[idx] = np.random.uniform(-0.02, 0.02, sbert_dim)
-        
-        # 실제 로그 ID (Hash 값) 인 경우
-        elif word in id_to_template:
-            template_text = id_to_template[word]
-            # SBERT로 문장을 벡터화
-            with torch.no_grad():
-                vector = sbert_model.encode(template_text, show_progress_bar=False)
-            weight_matrix[idx] = vector
-            
-        else:
-            weight_matrix[idx] = np.random.uniform(-0.02, 0.02, sbert_dim)
-
-    # 6. 저장
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    np.save(output_path, weight_matrix)
+    build_sbert_weight_matrix(vocab, semantic_catalog_path, semantic_vectors_path, output_path)
     print(f"Successfully saved semantic weights to {output_path}")
-    print(f"Matrix Shape: {weight_matrix.shape}")
+
 
 if __name__ == "__main__":
     generate_weights()

@@ -1,216 +1,104 @@
 import sys
-sys.path.append('../')
 
-import os
+sys.path.append("../")
+
 import gc
+import json
+import os
+
 import pandas as pd
-import numpy as np
-import ast
-from logparser import Spell, Drain, IPLoM
-import argparse
-from tqdm import tqdm
+
+from logdeep.dataset.semantic import (
+    attach_semantic_ids,
+    infer_delta_seconds,
+    prepare_semantic_ids,
+    write_sequence_files,
+)
 from logdeep.dataset.session import sliding_window
 
-tqdm.pandas()
+
 pd.options.mode.chained_assignment = None
 
-PAD = 0
-UNK = 1
-START = 2
 
-# 1. 상단에 RLE 카운트 함수 추가 (HDFS와 동일)
-def rle_count_seq(seq):
-    if not seq:
-        return []
-    out = []
-    i = 0
-    n = len(seq)
-    while i < n:
-        v = seq[i]
-        j = i + 1
-        while j < n and seq[j] == v:
-            j += 1
-        run_len = j - i
-        out.extend([run_len] * run_len)
-        i = j
-    return out
-
-# 2. 파일 생성기 수정 (token 파일과 freq 파일을 동시에 생성하도록)
-def deeplog_file_generator(filename, df, features):
-    # filename 뒤에 _freq를 붙여서 빈도 파일도 함께 생성
-    token_file = filename
-    freq_file = filename + "_freq"
-    
-    with open(token_file, 'w') as f_tok, open(freq_file, 'w') as f_freq:
-        for _, row in df.iterrows():
-            # EventId 시퀀스 추출 (리스트 형태라고 가정)
-            seq = row["EventId"]
-            
-            # 1) 토큰(LogID) 저장
-            f_tok.write(' '.join([str(v) for v in seq]) + '\n')
-            
-            # 2) 빈도(Frequency) 저장
-            freq_seq = rle_count_seq(seq)
-            f_freq.write(' '.join([str(v) for v in freq_seq]) + '\n')
-
-
-data_dir = os.path.expanduser("/content/.dataset/bgl/") 
-output_dir = "../output/bgl/" 
+data_dir = os.path.expanduser("/content/.dataset/bgl/")
+output_dir = "../output/bgl/"
 log_file = "BGL.log"
 
-# In the first column of the log, "-" indicates non-alert messages while others are alert messages.
-def count_anomaly():
-    total_size = 0
-    normal_size = 0
-    with open(data_dir + log_file, encoding="utf8") as f:
-        for line in f:
-            total_size += 1
-            if line.split(' ',1)[0] == '-':
-                normal_size += 1
-    print("total size {}, abnormal size {}".format(total_size, total_size - normal_size))
 
+def load_bgl_raw_logs(log_path):
+    rows = []
+    with open(log_path, encoding="utf-8", errors="ignore") as handle:
+        for line_number, line in enumerate(handle):
+            parts = line.rstrip("\n").split(maxsplit=9)
+            if len(parts) < 10:
+                continue
 
-# def deeplog_df_transfer(df, features, target, time_index, window_size):
-#     """
-#     :param window_size: offset datetime https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#dateoffset-objects
-#     :return:
-#     """
-#     agg_dict = {target:'max'}
-#     for f in features:
-#         agg_dict[f] = _custom_resampler
-#
-#     features.append(target)
-#     features.append(time_index)
-#     df = df[features]
-#     deeplog_df = df.set_index(time_index).resample(window_size).agg(agg_dict).reset_index()
-#     return deeplog_df
-#
-#
-# def _custom_resampler(array_like):
-#     return list(array_like)
+            timestamp = pd.to_datetime(parts[4], format="%Y-%m-%d-%H.%M.%S.%f", errors="coerce")
+            if pd.isna(timestamp):
+                timestamp = pd.to_datetime(parts[2] + " " + parts[4], errors="coerce")
+            if pd.isna(timestamp):
+                continue
 
+            rows.append(
+                {
+                    "line_number": line_number,
+                    "Label": int(parts[0] != "-"),
+                    "datetime": timestamp,
+                    "Content": parts[9],
+                }
+            )
 
-
-def parse_log(input_dir, output_dir, log_file, parser_type):
-    log_format = '<Label> <Id> <Date> <Code1> <Time> <Code2> <Component1> <Component2> <Level> <Content>'
-    regex = [
-        r'\s+',
-        r'(0x)[0-9a-fA-F]+', #hexadecimal
-        r'\d+.\d+.\d+.\d+',
-        # r'/\w+( )$'
-        r'\d+'
-    ]
-    keep_para = False
-    if parser_type == "drain":
-        # the hyper parameter is set according to http://jmzhu.logpai.com/pub/pjhe_icws2017.pdf
-        st = 0.3  # Similarity threshold
-        depth = 3  # Depth of all leaf nodes
-        parser = Drain.LogParser(log_format, indir=input_dir, outdir=output_dir, depth=depth, st=st, rex=regex, keep_para=keep_para)
-        parser.parse(log_file)
-    elif parser_type == "spell":
-        tau = 0.55
-        parser = Spell.LogParser(indir=data_dir, outdir=output_dir, log_format=log_format, tau=tau, rex=regex, keep_para=keep_para)
-        parser.parse(log_file)
-    elif parser_type == "iplom":
-        parser = IPLoM.LogParser(log_format=log_format, indir=input_dir, outdir=output_dir, rex=regex)
-        parser.parse(log_file)
-
-#
-# def merge_list(time, activity):
-#     time_activity = []
-#     for i in range(len(activity)):
-#         temp = []
-#         assert len(time[i]) == len(activity[i])
-#         for j in range(len(activity[i])):
-#             temp.append(tuple([time[i][j], activity[i][j]]))
-#         time_activity.append(np.array(temp))
-#     return time_activity
+    return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":
-    #
-    #
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('-p', default=None, type=str, help="parser type")
-    # parser.add_argument('-w', default='T', type=str, help='window size(mins)')
-    # parser.add_argument('-s', default='1', type=str, help='step size(mins)')
-    # parser.add_argument('-r', default=0.4, type=float, help="train ratio")
-    # args = parser.parse_args()
-    # print(args)
-    #
-
-    ##########
-    # Parser #
-    #########
-
-    parse_log(data_dir, output_dir, log_file, 'drain')
-
-    #########
-    # Count #
-    #########
-    # count_anomaly()
-
-    ##################
-    # Transformation #
-    ##################
-    # mins
     window_size = 5
     step_size = 1
     train_ratio = 0.4
 
-    df = pd.read_csv(f'{output_dir}{log_file}_structured.csv')
+    os.makedirs(output_dir, exist_ok=True)
 
-    # data preprocess
-    df['datetime'] = pd.to_datetime(df['Time'], format='%Y-%m-%d-%H.%M.%S.%f')
-    df["Label"] = df["Label"].apply(lambda x: int(x != "-"))
-    df['timestamp'] = df["datetime"].values.astype(np.int64) // 10 ** 9
-    df['deltaT'] = df['datetime'].diff() / np.timedelta64(1, 's')
-    df['deltaT'].fillna(0)
-    # convert time to UTC timestamp
-    # df['deltaT'] = df['datetime'].apply(lambda t: (t - pd.Timestamp("1970-01-01")) // pd.Timedelta('1s'))
+    df = load_bgl_raw_logs(os.path.join(data_dir, log_file))
+    prepare_semantic_ids(df["Content"].tolist(), output_dir=output_dir)
+    with open(os.path.join(output_dir, "semantic_id_lookup.json"), "r") as handle:
+        sid_lookup = json.load(handle)["hash_to_sid"]
+    df = attach_semantic_ids(df, "Content", sid_lookup)
 
-    # sampling with fixed window
-    # features = ["EventId", "deltaT"]
-    # target = "Label"
-    # deeplog_df = deeplog_df_transfer(df, features, target, "datetime", window_size=args.w)
-    # deeplog_df.dropna(subset=[target], inplace=True)
+    df["timestamp"] = df["datetime"].astype("int64") // 10 ** 9
+    df["deltaT"] = infer_delta_seconds(df["datetime"])
 
-    # sampling with sliding window
-    deeplog_df = sliding_window(df[["timestamp", "Label", "EventId", "deltaT"]],
-                                para={"window_size": int(window_size)*60, "step_size": int(step_size) * 60}
-                                )
+    deeplog_df = sliding_window(
+        df[["timestamp", "Label", "semantic_id", "deltaT"]],
+        para={"window_size": int(window_size) * 60, "step_size": int(step_size) * 60},
+    )
 
-    #########
-    # Train #
-    #########
-    df_normal =deeplog_df[deeplog_df["Label"] == 0]
-    df_normal = df_normal.sample(frac=1, random_state=12).reset_index(drop=True) #shuffle
+    df_normal = deeplog_df[deeplog_df["Label"] == 0]
+    df_normal = df_normal.sample(frac=1, random_state=12).reset_index(drop=True)
     normal_len = len(df_normal)
     train_len = int(normal_len * train_ratio)
 
     train = df_normal[:train_len]
-    # deeplog_file_generator(os.path.join(output_dir,'train'), train, ["EventId", "deltaT"])
-    deeplog_file_generator(os.path.join(output_dir,'train'), train, ["EventId"])
+    write_sequence_files(
+        os.path.join(output_dir, "train"),
+        train["semantic_id"].tolist(),
+    )
+    print(f"training size {train_len}")
 
-    print("training size {}".format(train_len))
-
-
-    ###############
-    # Test Normal #
-    ###############
     test_normal = df_normal[train_len:]
-    deeplog_file_generator(os.path.join(output_dir, 'test_normal'), test_normal, ["EventId"])
-    print("test normal size {}".format(normal_len - train_len))
+    write_sequence_files(
+        os.path.join(output_dir, "test_normal"),
+        test_normal["semantic_id"].tolist(),
+    )
+    print(f"test normal size {normal_len - train_len}")
 
     del df_normal
     del train
     del test_normal
     gc.collect()
 
-    #################
-    # Test Abnormal #
-    #################
     df_abnormal = deeplog_df[deeplog_df["Label"] == 1]
-    #df_abnormal["EventId"] = df_abnormal["EventId"].progress_apply(lambda e: event_index_map[e] if event_index_map.get(e) else UNK)
-    deeplog_file_generator(os.path.join(output_dir,'test_abnormal'), df_abnormal, ["EventId"])
-    print('test abnormal size {}'.format(len(df_abnormal)))
+    write_sequence_files(
+        os.path.join(output_dir, "test_abnormal"),
+        df_abnormal["semantic_id"].tolist(),
+    )
+    print(f"test abnormal size {len(df_abnormal)}")

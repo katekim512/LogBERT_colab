@@ -1,172 +1,99 @@
 import sys
-sys.path.append('../')
 
+sys.path.append("../")
+
+import json
 import os
 import re
-import json
+
 import pandas as pd
-from collections import defaultdict
-from tqdm import tqdm
-import numpy as np
-import ast
-from logparser import Spell, Drain, IPLoM
 
-# get [log key, delta time] as input for deeplog
-input_dir  = os.path.expanduser('/content/.dataset/hdfs/')
-output_dir = '../output/hdfs/'  # The output directory of parsing results
-log_file   = "HDFS.log"  # The input log file name
+from logdeep.dataset.semantic import attach_semantic_ids, prepare_semantic_ids, write_sequence_files
 
-log_structured_file = output_dir + log_file + "_structured.csv"
-log_templates_file = output_dir + log_file + "_templates.csv"
+
+input_dir = os.path.expanduser("/content/.dataset/hdfs/")
+output_dir = "../output/hdfs/"
+log_file = "HDFS.log"
 log_sequence_file = output_dir + "hdfs_sequence.csv"
 
-def rle_count_seq(seq):
-    """
-    Run-length encoding count expanded back to per-position counts.
-    Example: [1,1,2,2,2,5] -> [2,2,3,3,3,1]
-    """
-    if not seq:
-        return []
-
-    out = []
-    i = 0
-    n = len(seq)
-    while i < n:
-        v = seq[i]
-        j = i + 1
-        while j < n and seq[j] == v:
-            j += 1
-        run_len = j - i
-        out.extend([run_len] * run_len)
-        i = j
-    return out
+HDFS_LOG_PATTERN = re.compile(
+    r"^(?P<Date>\d{6})\s+(?P<Time>\d{6})\s+(?P<Pid>\d+)\s+"
+    r"(?P<Level>\w+)\s+(?P<Component>[^:]+):\s+(?P<Content>.*)$"
+)
 
 
-def parse_event_sequence(row):
-    # EventSequence is stored as a stringified python list in generated CSV.
-    if isinstance(row, list):
-        return row
-    if isinstance(row, str):
-        return ast.literal_eval(row)
-    return ast.literal_eval(str(row))
+def load_hdfs_raw_logs(log_path):
+    rows = []
+    with open(log_path, encoding="utf-8", errors="ignore") as handle:
+        for line_number, line in enumerate(handle):
+            match = HDFS_LOG_PATTERN.match(line.rstrip("\n"))
+            if not match:
+                continue
 
-def mapping():
-    log_temp = pd.read_csv(log_templates_file)
-    log_temp.sort_values(by = ["Occurrences"], ascending=False, inplace=True)
-    log_temp_dict = {event: idx+1 for idx , event in enumerate(list(log_temp["EventId"])) }
-    print(log_temp_dict)
-    with open (output_dir + "hdfs_log_templates.json", "w") as f:
-        json.dump(log_temp_dict, f)
+            content = match.group("Content")
+            block_ids = sorted(set(re.findall(r"(blk_-?\d+)", content)))
+            if not block_ids:
+                continue
 
+            timestamp = pd.to_datetime(
+                f"{match.group('Date')} {match.group('Time')}",
+                format="%y%m%d %H%M%S",
+                errors="coerce",
+            )
+            if pd.isna(timestamp):
+                continue
 
-def parser(input_dir, output_dir, log_file, log_format, type='drain'):
-    if type == 'spell':
-        tau        = 0.5  # Message type threshold (default: 0.5)
-        regex      = [
-            "(/[-\w]+)+", #replace file path with *
-            "(?<=blk_)[-\d]+" #replace block_id with *
+            rows.append(
+                {
+                    "line_number": line_number,
+                    "datetime": timestamp,
+                    "Content": content,
+                    "BlockIds": block_ids,
+                }
+            )
 
-        ]  # Regular expression list for optional preprocessing (default: [])
-
-        parser = Spell.LogParser(indir=input_dir, outdir=output_dir, log_format=log_format, tau=tau, rex=regex, keep_para=False)
-        parser.parse(log_file)
-
-    elif type == 'drain':
-        regex = [
-            r"(?<=blk_)[-\d]+", # block_id
-            r'\d+\.\d+\.\d+\.\d+',  # IP
-            r"(/[-\w]+)+",  # file path
-            #r'(?<=[^A-Za-z0-9])(\-?\+?\d+)(?=[^A-Za-z0-9])|[0-9]+$',  # Numbers
-        ]
-        # the hyper parameter is set according to http://jmzhu.logpai.com/pub/pjhe_icws2017.pdf
-        st = 0.5  # Similarity threshold
-        depth = 5  # Depth of all leaf nodes
-        parser = Drain.LogParser(log_format, indir=input_dir, outdir=output_dir, depth=depth, st=st, rex=regex, keep_para=False)
-        parser.parse(log_file)
-
-    elif type == 'iplom':
-        regex = [
-            r"(/[-\w]+)+",
-            r"(?<=blk_)[-\d]+"
-        ]
-        parser = IPLoM.LogParser(
-            log_format=log_format,
-            indir=input_dir,
-            outdir=output_dir,
-            rex=regex
-        )
-
-        parser.parse(log_file)
+    return pd.DataFrame(rows)
 
 
-def hdfs_sampling(log_file, window='session'):
-    assert window == 'session', "Only window=session is supported for HDFS dataset."
-    print("Loading", log_file)
-    df = pd.read_csv(log_file, engine='c',
-            na_filter=False, memory_map=True, dtype={'Date':object, "Time": object})
+def generate_sequences(df, label_path):
+    label_df = pd.read_csv(label_path)
+    blk_label_dict = {
+        row["BlockId"]: 1 if row["Label"] == "Anomaly" else 0
+        for _, row in label_df.iterrows()
+    }
 
-    with open(output_dir + "hdfs_log_templates.json", "r") as f:
-        event_num = json.load(f)
-    df["EventId"] = df["EventId"].apply(lambda x: event_num.get(x, -1))
+    data_dict = {}
+    for _, row in df.iterrows():
+        for block_id in row["BlockIds"]:
+            data_dict.setdefault(block_id, []).append(row["semantic_id"])
 
-    data_dict = defaultdict(list) #preserve insertion order of items
-    for idx, row in tqdm(df.iterrows()):
-        blkId_list = re.findall(r'(blk_-?\d+)', row['Content'])
-        blkId_set = set(blkId_list)
-        for blk_Id in blkId_set:
-            data_dict[blk_Id].append(row["EventId"])
-
-    data_df = pd.DataFrame(list(data_dict.items()), columns=['BlockId', 'EventSequence'])
-    data_df.to_csv(log_sequence_file, index=None)
-    print("hdfs sampling done")
-
-
-def generate_train_test(hdfs_sequence_file, n=None, ratio=0.3):
-    blk_label_dict = {}
-    blk_label_file = os.path.join(input_dir, "anomaly_label.csv")
-    blk_df = pd.read_csv(blk_label_file)
-    for _ , row in tqdm(blk_df.iterrows()):
-        blk_label_dict[row["BlockId"]] = 1 if row["Label"] == "Anomaly" else 0
-
-    seq = pd.read_csv(hdfs_sequence_file)
-    seq["Label"] = seq["BlockId"].apply(lambda x: blk_label_dict.get(x)) #add label to the sequence of each blockid
-
-    normal_seq = seq[seq["Label"] == 0]["EventSequence"]
-    normal_seq = normal_seq.sample(frac=1, random_state=20) # shuffle normal data
-
-    abnormal_seq = seq[seq["Label"] == 1]["EventSequence"]
-    normal_len, abnormal_len = len(normal_seq), len(abnormal_seq)
-    train_len = n if n else int(normal_len * ratio)
-    print("normal size {0}, abnormal size {1}, training size {2}".format(normal_len, abnormal_len, train_len))
-
-    train = normal_seq.iloc[:train_len]
-    test_normal = normal_seq.iloc[train_len:]
-    test_abnormal = abnormal_seq
-
-    df_to_files(train, output_dir + "train", output_dir + "train_freq")
-    df_to_files(test_normal, output_dir + "test_normal", output_dir + "test_normal_freq")
-    df_to_files(test_abnormal, output_dir + "test_abnormal", output_dir + "test_abnormal_freq")
-    print("generate train test data done")
-
-
-def df_to_files(df, token_file_name, freq_file_name):
-    with open(token_file_name, 'w') as f_tok, open(freq_file_name, 'w') as f_freq:
-        for _, row in df.items():
-            seq = parse_event_sequence(row)
-            # 1) token sequence (LogID / template ID)
-            f_tok.write(' '.join([str(ele) for ele in seq]))
-            f_tok.write('\n')
-
-            # 2) frequency sequence: per-position expanded run-length counts
-            freq_seq = rle_count_seq(seq)
-            f_freq.write(' '.join([str(ele) for ele in freq_seq]))
-            f_freq.write('\n')
+    seq_df = pd.DataFrame(list(data_dict.items()), columns=["BlockId", "EventSequence"])
+    seq_df["Label"] = seq_df["BlockId"].map(lambda block_id: blk_label_dict.get(block_id, 0))
+    seq_df.to_csv(log_sequence_file, index=False)
+    return seq_df
 
 
 if __name__ == "__main__":
-    # 1. parse HDFS log
-    log_format = '<Date> <Time> <Pid> <Level> <Component>: <Content>'  # HDFS log format
-    parser(input_dir, output_dir, log_file, log_format, 'drain')
-    mapping()
-    hdfs_sampling(log_structured_file)
-    generate_train_test(log_sequence_file, n=4855)
+    os.makedirs(output_dir, exist_ok=True)
+
+    df = load_hdfs_raw_logs(os.path.join(input_dir, log_file))
+    prepare_semantic_ids(df["Content"].tolist(), output_dir=output_dir)
+    with open(os.path.join(output_dir, "semantic_id_lookup.json"), "r") as handle:
+        sid_lookup = json.load(handle)["hash_to_sid"]
+    df = attach_semantic_ids(df, "Content", sid_lookup)
+
+    seq_df = generate_sequences(df, os.path.join(input_dir, "anomaly_label.csv"))
+
+    normal_seq = seq_df[seq_df["Label"] == 0]["EventSequence"]
+    normal_seq = normal_seq.sample(frac=1, random_state=20)
+    abnormal_seq = seq_df[seq_df["Label"] == 1]["EventSequence"]
+
+    normal_len = len(normal_seq)
+    abnormal_len = len(abnormal_seq)
+    train_len = min(4855, normal_len)
+    print(f"normal size {normal_len}, abnormal size {abnormal_len}, training size {train_len}")
+
+    write_sequence_files(output_dir + "train", normal_seq.iloc[:train_len].tolist())
+    write_sequence_files(output_dir + "test_normal", normal_seq.iloc[train_len:].tolist())
+    write_sequence_files(output_dir + "test_abnormal", abnormal_seq.tolist())
+    print("generate train test data done")
