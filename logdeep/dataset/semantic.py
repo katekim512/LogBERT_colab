@@ -285,17 +285,42 @@ def build_parser_semantic_id_weight_matrix(
     event_ids = structured_df["EventId"].astype(str).tolist()
     raw_logs = structured_df["Content"].astype(str).tolist()
 
-    counts = Counter(raw_logs)
-    unique_logs = list(counts.keys())
-    unique_hashes = [content_hash(log) for log in unique_logs]
-    embeddings_768 = _encode_unique_logs(unique_logs, model_name=model_name, batch_size=batch_size)
-    code_matrix, _, _ = _residual_quantize(
-        embeddings_768,
-        num_codebooks=num_codebooks,
-        codebook_size=codebook_size,
-        random_state=random_state,
-    )
-    semantic_clusters = ["SID_" + "_".join(str(int(code)) for code in row[:prefix_len]) for row in code_matrix]
+    cache_dir = os.path.dirname(output_path)
+    metadata_path = os.path.join(cache_dir, "semantic_log_metadata.csv")
+    embeddings_path = os.path.join(cache_dir, "semantic_log_embeddings_768.npy")
+
+    if os.path.exists(metadata_path) and os.path.exists(embeddings_path):
+        print(f"Reusing cached semantic metadata from {metadata_path}")
+        metadata_df = pd.read_csv(metadata_path)
+        embeddings_768 = np.load(embeddings_path)
+
+        if "semantic_cluster" not in metadata_df.columns:
+            code_columns = [f"code_{idx}" for idx in range(prefix_len)]
+            if not all(column in metadata_df.columns for column in code_columns):
+                raise KeyError(
+                    f"Cached metadata at {metadata_path} is missing semantic_cluster and code columns {code_columns}"
+                )
+            metadata_df["semantic_cluster"] = metadata_df.apply(
+                lambda row: "SID_" + "_".join(str(int(row[column])) for column in code_columns),
+                axis=1,
+            )
+
+        metadata_df["content_hash"] = metadata_df["content_hash"].astype(str)
+        hash_to_cluster = dict(zip(metadata_df["content_hash"], metadata_df["semantic_cluster"]))
+        semantic_clusters = metadata_df["semantic_cluster"].tolist()
+    else:
+        counts = Counter(raw_logs)
+        unique_logs = list(counts.keys())
+        unique_hashes = [content_hash(log) for log in unique_logs]
+        embeddings_768 = _encode_unique_logs(unique_logs, model_name=model_name, batch_size=batch_size)
+        code_matrix, _, _ = _residual_quantize(
+            embeddings_768,
+            num_codebooks=num_codebooks,
+            codebook_size=codebook_size,
+            random_state=random_state,
+        )
+        semantic_clusters = ["SID_" + "_".join(str(int(code)) for code in row[:prefix_len]) for row in code_matrix]
+        hash_to_cluster = dict(zip(unique_hashes, semantic_clusters))
 
     cluster_mean_df = (
         pd.DataFrame(
@@ -308,7 +333,6 @@ def build_parser_semantic_id_weight_matrix(
         .agg(embedding_768=("embedding_768", lambda rows: np.mean(np.stack(rows, axis=0), axis=0).astype(np.float32)))
     )
     cluster_mean_lookup = dict(zip(cluster_mean_df["semantic_cluster"], cluster_mean_df["embedding_768"]))
-    hash_to_cluster = dict(zip(unique_hashes, semantic_clusters))
 
     structured_df = structured_df.copy()
     structured_df["content_hash"] = structured_df["Content"].astype(str).map(content_hash)
