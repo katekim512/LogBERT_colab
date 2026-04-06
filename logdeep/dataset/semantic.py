@@ -135,12 +135,14 @@ def prepare_semantic_ids(
     )
 
     semantic_ids = ["SID_" + "_".join(str(int(code)) for code in row) for row in code_matrix]
+    semantic_prefixes = ["SID_" + "_".join(str(int(code)) for code in row[:2]) for row in code_matrix]
     metadata = pd.DataFrame(
         {
             "content_hash": unique_hashes,
             "raw_log": unique_logs,
             "occurrences": [counts[log] for log in unique_logs],
             "semantic_id": semantic_ids,
+            "semantic_cluster": semantic_prefixes,
         }
     )
     for idx in range(code_matrix.shape[1]):
@@ -153,28 +155,36 @@ def prepare_semantic_ids(
         **{f"codebook_{idx}": centers for idx, centers in enumerate(codebooks)},
     )
 
+    cluster_mean_df = (
+        pd.DataFrame(
+            {
+                "semantic_cluster": semantic_prefixes,
+                "embedding_768": list(embeddings_768),
+            }
+        )
+        .groupby("semantic_cluster", as_index=False)
+        .agg(embedding_768=("embedding_768", lambda rows: np.mean(np.stack(rows, axis=0), axis=0).astype(np.float32)))
+    )
+    cluster_mean_lookup = dict(zip(cluster_mean_df["semantic_cluster"], cluster_mean_df["embedding_768"]))
+
     catalog = (
         metadata.groupby("semantic_id", as_index=False)
         .agg(
             occurrences=("occurrences", "sum"),
             sample_log=("raw_log", "first"),
             content_hash=("content_hash", "first"),
+            semantic_cluster=("semantic_cluster", "first"),
             **{f"code_{idx}": (f"code_{idx}", "first") for idx in range(code_matrix.shape[1])},
         )
         .sort_values("semantic_id")
         .reset_index(drop=True)
     )
 
-    first_seen_index = {}
-    for index, sid in enumerate(semantic_ids):
-        first_seen_index.setdefault(sid, index)
-
     sid_to_index = {}
     sid_vectors_768 = []
-    for sid in catalog["semantic_id"]:
-        first_index = first_seen_index[sid]
+    for sid, semantic_cluster in zip(catalog["semantic_id"], catalog["semantic_cluster"]):
         sid_to_index[sid] = len(sid_vectors_768)
-        sid_vectors_768.append(reconstructed_768[first_index])
+        sid_vectors_768.append(cluster_mean_lookup[semantic_cluster])
 
     sid_vectors_768 = np.stack(sid_vectors_768, axis=0).astype(np.float32)
     sid_vectors_256 = _project_embeddings(sid_vectors_768, target_dim=target_dim)
@@ -221,6 +231,107 @@ def build_sbert_weight_matrix(vocab, semantic_catalog_path, semantic_vectors_pat
         if token in SPECIAL_TOKENS:
             continue
         vector = sid_to_vector.get(token)
+        if vector is not None:
+            weight_matrix[idx] = vector
+
+    np.save(output_path, weight_matrix)
+    return output_path
+
+
+def build_template_sbert_weight_matrix(
+    vocab,
+    template_csv_path,
+    output_path,
+    model_name="sentence-transformers/all-mpnet-base-v2",
+    batch_size=64,
+    target_dim=256,
+):
+    template_df = pd.read_csv(template_csv_path)
+    event_ids = template_df["EventId"].astype(str).tolist()
+    templates = template_df["EventTemplate"].astype(str).tolist()
+
+    embeddings_768 = _encode_unique_logs(templates, model_name=model_name, batch_size=batch_size)
+    embeddings_256 = _project_embeddings(embeddings_768, target_dim=target_dim)
+    event_to_vector = {event_id: embeddings_256[idx] for idx, event_id in enumerate(event_ids)}
+
+    weight_matrix = np.random.uniform(-0.02, 0.02, (len(vocab), target_dim)).astype(np.float32)
+    for token, idx in tqdm(vocab.stoi.items(), desc="Building template SBERT weights"):
+        if token in SPECIAL_TOKENS:
+            continue
+        vector = event_to_vector.get(token)
+        if vector is not None:
+            weight_matrix[idx] = vector
+
+    np.save(output_path, weight_matrix)
+    return output_path
+
+
+def build_parser_semantic_id_weight_matrix(
+    vocab,
+    structured_csv_path,
+    output_path,
+    model_name="sentence-transformers/all-mpnet-base-v2",
+    num_codebooks=3,
+    codebook_size=128,
+    batch_size=64,
+    target_dim=256,
+    prefix_len=2,
+    random_state=42,
+):
+    structured_df = pd.read_csv(structured_csv_path)
+    if "EventId" not in structured_df.columns or "Content" not in structured_df.columns:
+        raise KeyError("structured_csv_path must include EventId and Content columns")
+
+    event_ids = structured_df["EventId"].astype(str).tolist()
+    raw_logs = structured_df["Content"].astype(str).tolist()
+
+    counts = Counter(raw_logs)
+    unique_logs = list(counts.keys())
+    unique_hashes = [content_hash(log) for log in unique_logs]
+    embeddings_768 = _encode_unique_logs(unique_logs, model_name=model_name, batch_size=batch_size)
+    code_matrix, _, _ = _residual_quantize(
+        embeddings_768,
+        num_codebooks=num_codebooks,
+        codebook_size=codebook_size,
+        random_state=random_state,
+    )
+    semantic_clusters = ["SID_" + "_".join(str(int(code)) for code in row[:prefix_len]) for row in code_matrix]
+
+    cluster_mean_df = (
+        pd.DataFrame(
+            {
+                "semantic_cluster": semantic_clusters,
+                "embedding_768": list(embeddings_768),
+            }
+        )
+        .groupby("semantic_cluster", as_index=False)
+        .agg(embedding_768=("embedding_768", lambda rows: np.mean(np.stack(rows, axis=0), axis=0).astype(np.float32)))
+    )
+    cluster_mean_lookup = dict(zip(cluster_mean_df["semantic_cluster"], cluster_mean_df["embedding_768"]))
+    hash_to_cluster = dict(zip(unique_hashes, semantic_clusters))
+
+    structured_df = structured_df.copy()
+    structured_df["content_hash"] = structured_df["Content"].astype(str).map(content_hash)
+    structured_df["semantic_cluster"] = structured_df["content_hash"].map(hash_to_cluster)
+    structured_df["cluster_vector_768"] = structured_df["semantic_cluster"].map(cluster_mean_lookup)
+
+    event_vectors_df = (
+        structured_df.groupby("EventId", as_index=False)
+        .agg(cluster_vector_768=("cluster_vector_768", lambda rows: np.mean(np.stack(rows, axis=0), axis=0).astype(np.float32)))
+    )
+
+    event_vectors_768 = np.stack(event_vectors_df["cluster_vector_768"].to_list(), axis=0).astype(np.float32)
+    event_vectors_256 = _project_embeddings(event_vectors_768, target_dim=target_dim)
+    event_to_vector = {
+        str(event_id): event_vectors_256[idx]
+        for idx, event_id in enumerate(event_vectors_df["EventId"].tolist())
+    }
+
+    weight_matrix = np.random.uniform(-0.02, 0.02, (len(vocab), target_dim)).astype(np.float32)
+    for token, idx in tqdm(vocab.stoi.items(), desc="Building parser-aligned semantic ID weights"):
+        if token in SPECIAL_TOKENS:
+            continue
+        vector = event_to_vector.get(token)
         if vector is not None:
             weight_matrix[idx] = vector
 

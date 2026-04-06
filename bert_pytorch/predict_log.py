@@ -83,6 +83,16 @@ class Predictor():
         self.mask_ratio = options["mask_ratio"]
         self.min_len=options["min_len"]
 
+    @staticmethod
+    def _contains_semantic_ids(file_path):
+        if not os.path.exists(file_path):
+            return False
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                if "SID_" in line:
+                    return True
+        return False
+
     # def detect_logkey_anomaly(self, masked_output, masked_label):
     #     num_undetected_tokens = 0
     #     output_maskes = []
@@ -400,6 +410,9 @@ class Predictor():
         return all_results, []
 
     def predict(self):
+        if self._contains_semantic_ids(self.output_dir + "test_normal") or self._contains_semantic_ids(self.output_dir + "test_abnormal"):
+            print("Semantic ID 이용한 Train / Test")
+
         model = torch.load(self.model_path, weights_only=False, map_location=self.device)
         model.to(self.device)
         model.eval()

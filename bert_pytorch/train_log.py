@@ -52,11 +52,24 @@ class Trainer():
         self.hypersphere_loss = options["hypersphere_loss"]
         self.mask_ratio = options["mask_ratio"]
         self.min_len = options['min_len']
+        self.semantic_id_weight = options.get("semantic_id_weight", 0.1)
 
         print("Save options parameters")
         save_parameters(options, self.model_dir + "parameters.txt")
 
+    @staticmethod
+    def _contains_semantic_ids(file_path):
+        if not os.path.exists(file_path):
+            return False
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                if "SID_" in line:
+                    return True
+        return False
+
     def train(self):
+        if self._contains_semantic_ids(self.output_path + "train"):
+            print("Semantic ID 이용한 Train / Test")
 
         print("Loading vocab", self.vocab_path)
         vocab = WordVocab.load_vocab(self.vocab_path)
@@ -100,12 +113,20 @@ class Trainer():
         # generate_sbert_weights.py에서 저장한 경로와 일치해야 합니다.
         sbert_path = os.path.join(self.output_path, "sbert_weights.npy")
         sbert_weights = None
+        semantic_id_path = os.path.join(self.output_path, "semantic_id_weights.npy")
+        semantic_id_weights = None
         
         if os.path.exists(sbert_path):
             print(f"Loading SBERT weights from {sbert_path}")
             sbert_weights = np.load(sbert_path)
         else:
             print("⚠️ SBERT weights not found. Using random initialization.")
+
+        if os.path.exists(semantic_id_path):
+            print(f"Loading Semantic ID weights from {semantic_id_path} (weight={self.semantic_id_weight})")
+            semantic_id_weights = np.load(semantic_id_path)
+        else:
+            print("Semantic ID weights not found. Skipping Semantic ID auxiliary embedding.")
 
         # BERT 생성 시 sbert_weights 인자 추가
         bert = BERT(len(vocab), 
@@ -116,7 +137,9 @@ class Trainer():
                     is_logkey=self.is_logkey, 
                     is_time=self.is_time,
                     is_freq=self.is_freq,
-                    sbert_weights=sbert_weights) # 이 부분 추가
+                    sbert_weights=sbert_weights,
+                    semantic_id_weights=semantic_id_weights,
+                    semantic_id_weight=self.semantic_id_weight)
 
         print("Creating BERT Trainer")
         self.trainer = BERTTrainer(bert, len(vocab), train_dataloader=self.train_data_loader, valid_dataloader=self.valid_data_loader,

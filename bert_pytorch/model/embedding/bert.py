@@ -16,7 +16,19 @@ class BERTEmbedding(nn.Module):
         sum of all these features are output of BERTEmbedding
     """
 
-    def __init__(self, vocab_size, embed_size, max_len, dropout=0.1, is_logkey=True, is_time=False, is_freq=False, sbert_weights=None):
+    def __init__(
+        self,
+        vocab_size,
+        embed_size,
+        max_len,
+        dropout=0.1,
+        is_logkey=True,
+        is_time=False,
+        is_freq=False,
+        sbert_weights=None,
+        semantic_id_weights=None,
+        semantic_id_weight=0.1,
+    ):
         """
         :param vocab_size: total vocab size
         :param embed_size: embedding size of token embedding
@@ -25,6 +37,13 @@ class BERTEmbedding(nn.Module):
         super().__init__()
         # TokenEmbedding 생성 시 sbert_weights 전달
         self.token = TokenEmbedding(vocab_size=vocab_size, embed_size=embed_size, sbert_weights=sbert_weights)
+        self.semantic_id_token = None
+        if semantic_id_weights is not None:
+            self.semantic_id_token = TokenEmbedding(
+                vocab_size=vocab_size,
+                embed_size=embed_size,
+                sbert_weights=semantic_id_weights,
+            )
         self.position = PositionalEmbedding(d_model=self.token.embedding_dim, max_len=max_len)
         self.segment = SegmentEmbedding(embed_size=self.token.embedding_dim)
         self.time_embed = TimeEmbedding(embed_size=self.token.embedding_dim)
@@ -34,11 +53,14 @@ class BERTEmbedding(nn.Module):
         self.is_logkey = is_logkey
         self.is_time = is_time
         self.is_freq = is_freq
+        self.semantic_id_weight = semantic_id_weight
 
     def forward(self, sequence, segment_label=None, time_info=None):
         x = self.position(sequence)
         # if self.is_logkey:
         x = x + self.token(sequence)
+        if self.semantic_id_token is not None:
+            x = x + self.semantic_id_weight * self.semantic_id_token(sequence)
         if segment_label is not None:
             x = x + self.segment(segment_label)
         if self.is_time:

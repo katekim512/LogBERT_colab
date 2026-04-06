@@ -42,6 +42,7 @@ options["test_ratio"] = 0.1
 options["is_logkey"] = True
 options["is_time"] = False
 options["is_freq"] = True
+options["semantic_id_weight"] = 0.1
 
 options["hypersphere_loss"] = True
 options["hypersphere_loss_test"] = False
@@ -114,7 +115,6 @@ if __name__ == "__main__":
         print("VOCAB SIZE:", len(vocab))
         print("save vocab in", options["vocab_path"])
         vocab.save_vocab(options["vocab_path"])
-
 
 
 

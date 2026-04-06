@@ -5,21 +5,27 @@ import sys
 sys.path.append(os.getcwd())
 sys.path.append("/content/LogBERT_colab")
 
-from logdeep.dataset.semantic import build_sbert_weight_matrix
+from logdeep.dataset.semantic import (
+    build_parser_semantic_id_weight_matrix,
+    build_template_sbert_weight_matrix,
+)
 
 
 def generate_weights_bgl():
     output_dir = "/content/LogBERT_colab/output/bgl/"
     vocab_path = os.path.join(output_dir, "vocab.pkl")
-    semantic_catalog_path = os.path.join(output_dir, "semantic_id_catalog.csv")
-    semantic_vectors_path = os.path.join(output_dir, "semantic_id_vectors_256.npy")
+    template_csv_path = os.path.join(output_dir, "BGL.log_templates.csv")
+    structured_csv_path = os.path.join(output_dir, "BGL.log_structured.csv")
     output_path = os.path.join(output_dir, "sbert_weights.npy")
+    semantic_id_output_path = os.path.join(output_dir, "semantic_id_weights.npy")
 
     with open(vocab_path, "rb") as handle:
         vocab = pickle.load(handle)
 
-    build_sbert_weight_matrix(vocab, semantic_catalog_path, semantic_vectors_path, output_path)
+    build_template_sbert_weight_matrix(vocab, template_csv_path, output_path)
+    build_parser_semantic_id_weight_matrix(vocab, structured_csv_path, semantic_id_output_path)
     print(f"Saved: {output_path}")
+    print(f"Saved: {semantic_id_output_path}")
 
 
 if __name__ == "__main__":
