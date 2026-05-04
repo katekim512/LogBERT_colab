@@ -1,3 +1,6 @@
+import numpy as np
+import os
+
 from torch.utils.data import DataLoader
 from bert_pytorch.model import BERT
 from bert_pytorch.trainer import BERTTrainer
@@ -42,12 +45,16 @@ class Trainer():
         self.attn_heads = options["attn_heads"]
         self.is_logkey = options["is_logkey"]
         self.is_time = options["is_time"]
+        self.is_freq = options.get("is_freq", False)
+        self.use_sbert_embedding = options.get("use_sbert_embedding", False)
+        self.use_semantic_id = options.get("use_semantic_id", False)
         self.scale = options["scale"]
         self.scale_path = options["scale_path"]
         self.n_epochs_stop = options["n_epochs_stop"]
         self.hypersphere_loss = options["hypersphere_loss"]
         self.mask_ratio = options["mask_ratio"]
         self.min_len = options['min_len']
+        self.semantic_id_weight = options.get("semantic_id_weight", 0.1)
 
         print("Save options parameters")
         save_parameters(options, self.model_dir + "parameters.txt")
@@ -66,7 +73,8 @@ class Trainer():
                                      scale=self.scale,
                                      scale_path=self.scale_path,
                                      seq_len=self.seq_len,
-                                     min_len=self.min_len
+                                     min_len=self.min_len,
+                                     freq_data_path=(self.output_path + "train_freq") if self.is_freq else None
                                     )
 
         train_dataset = LogDataset(logkey_train,time_train, vocab, seq_len=self.seq_len,
@@ -93,8 +101,38 @@ class Trainer():
         gc.collect()
 
         print("Building BERT model")
-        bert = BERT(len(vocab), max_len=self.max_len, hidden=self.hidden, n_layers=self.layers, attn_heads=self.attn_heads,
-                    is_logkey=self.is_logkey, is_time=self.is_time)
+        sbert_weights = None
+        semantic_id_weights = None
+
+        if self.use_sbert_embedding:
+            sbert_path = os.path.join(self.output_path, "sbert_weights.npy")
+            if os.path.exists(sbert_path):
+                print(f"Loading SBERT weights from {sbert_path}")
+                sbert_weights = np.load(sbert_path)
+            else:
+                print("SBERT weights not found. Using random initialization.")
+
+        if self.use_semantic_id:
+            semantic_id_path = os.path.join(self.output_path, "semantic_id_weights.npy")
+            if os.path.exists(semantic_id_path):
+                print(f"Loading Semantic ID weights from {semantic_id_path} (weight={self.semantic_id_weight})")
+                semantic_id_weights = np.load(semantic_id_path)
+            else:
+                print("Semantic ID weights not found. Skipping Semantic ID auxiliary embedding.")
+
+        bert = BERT(
+            len(vocab),
+            max_len=self.max_len,
+            hidden=self.hidden,
+            n_layers=self.layers,
+            attn_heads=self.attn_heads,
+            is_logkey=self.is_logkey,
+            is_time=self.is_time,
+            is_freq=self.is_freq,
+            sbert_weights=sbert_weights,
+            semantic_id_weights=semantic_id_weights,
+            semantic_id_weight=self.semantic_id_weight,
+        )
 
         print("Creating BERT Trainer")
         self.trainer = BERTTrainer(bert, len(vocab), train_dataloader=self.train_data_loader, valid_dataloader=self.valid_data_loader,
