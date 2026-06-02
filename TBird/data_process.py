@@ -1,27 +1,48 @@
 import sys
 sys.path.append('../')
 
+import gc
 import os
-import pandas as pd
+
 import numpy as np
-from logparser import Spell, Drain
+import pandas as pd
 from tqdm import tqdm
+
+from ablation import add_ablation_argument, is_semantic_id_like, is_semparser_like
 from logdeep.dataset.session import sliding_window
-
-tqdm.pandas()
-pd.options.mode.chained_assignment = None  # default='warn'
+from logparser import Drain, Spell
 
 
-# In the first column of the log, "-" indicates non-alert messages while others are alert messages.
-def count_anomaly(log_path):
-    total_size = 0
-    normal_size = 0
-    with open(log_path, errors='ignore') as f:
-        for line in f:
-            total_size += 1
-            if line.split('')[0] == '-':
-                normal_size += 1
-    print("total size {}, abnormal size {}".format(total_size, total_size - normal_size))
+pd.options.mode.chained_assignment = None
+
+
+def rle_count_seq(seq):
+    if len(seq) == 0:
+        return []
+
+    out = []
+    i = 0
+    n = len(seq)
+    while i < n:
+        value = seq[i]
+        j = i + 1
+        while j < n and seq[j] == value:
+            j += 1
+        run_len = j - i
+        out.extend([run_len] * run_len)
+        i = j
+    return out
+
+
+def write_sequence_files(token_path, sequences):
+    freq_path = token_path + "_freq"
+    with open(token_path, "w") as token_file, open(freq_path, "w") as freq_file:
+        for seq in sequences:
+            token_file.write(" ".join(str(token) for token in seq))
+            token_file.write("\n")
+            freq_seq = rle_count_seq(seq)
+            freq_file.write(" ".join(str(token) for token in freq_seq))
+            freq_file.write("\n")
 
 
 def deeplog_file_generator(filename, df, features):
@@ -35,46 +56,26 @@ def deeplog_file_generator(filename, df, features):
 def parse_log(input_dir, output_dir, log_file, parser_type):
     log_format = '<Label> <Id> <Date> <Admin> <Month> <Day> <Time> <AdminAddr> <Content>'
     regex = [
-        r'(0x)[0-9a-fA-F]+',  # hexadecimal
+        r'(0x)[0-9a-fA-F]+',
         r'\d+\.\d+\.\d+\.\d+',
         r'(?<=Warning: we failed to resolve data source name )[\w\s]+',
         r'\d+'
     ]
     keep_para = False
     if parser_type == "drain":
-        # the hyper parameter is set according to http://jmzhu.logpai.com/pub/pjhe_icws2017.pdf
-        st = 0.3  # Similarity threshold
-        depth = 3  # Depth of all leaf nodes
-
-        # Drain is modified
-        parser = Drain.LogParser(log_format,
-                                 indir=input_dir,
-                                 outdir=output_dir,
-                                 depth=depth,
-                                 st=st,
-                                 rex=regex,
-                                 keep_para=keep_para, maxChild=1000)
-        parser.parse(log_file)
-
+        parser = Drain.LogParser(log_format, indir=input_dir, outdir=output_dir, depth=3, st=0.3, rex=regex, keep_para=keep_para, maxChild=1000)
     elif parser_type == "spell":
-        tau = 0.35
-        parser = Spell.LogParser(indir=data_dir,
-                                 outdir=output_dir,
-                                 log_format=log_format,
-                                 tau=tau,
-                                 rex=regex,
-                                 keep_para=keep_para)
-        parser.parse(log_file)
-
+        parser = Spell.LogParser(indir=input_dir, outdir=output_dir, log_format=log_format, tau=0.35, rex=regex, keep_para=keep_para)
+    else:
+        raise ValueError(f"Unsupported parser type: {parser_type}")
+    parser.parse(log_file)
 
 
 def sample_raw_data(data_file, output_file, sample_window_size, sample_step_size):
-    # sample 1M by sliding window, abnormal rate is over 2%
     sample_data = []
     labels = []
     idx = 0
 
-    # spirit dataset can start from the 2Mth line, as there are many abnormal lines gathering in the first 2M
     with open(data_file, 'r', errors='ignore') as f:
         for line in f:
             labels.append(line.split()[0] != '-')
@@ -96,82 +97,73 @@ def sample_raw_data(data_file, output_file, sample_window_size, sample_step_size
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    add_ablation_argument(parser)
+    args = parser.parse_args()
+
     data_dir = os.path.expanduser("~/.dataset/tbird/")
     output_dir = "../output/tbird/"
     raw_log_file = "Thunderbird.log"
     sample_log_file = "Thunderbird_20M.log"
-    sample_window_size = 2*10**7
-    sample_step_size = 10**4
+    sample_window_size = 2 * 10 ** 7
+    sample_step_size = 10 ** 4
     window_name = ''
     log_file = sample_log_file
 
     parser_type = 'drain'
-    #mins
     window_size = 1
     step_size = 0.5
     train_ratio = 6000
 
-    ########
-    # count anomaly
-    ########
-    # count_anomaly(data_dir + log_file)
-    # sys.exit()
-
-    #########
-    # sample raw data
-    #########
-    sample_raw_data(data_dir+raw_log_file, data_dir+sample_log_file, sample_window_size, sample_step_size )
-
-
-    ##########
-    # Parser #
-    #########
+    sample_raw_data(data_dir + raw_log_file, data_dir + sample_log_file, sample_window_size, sample_step_size)
     parse_log(data_dir, output_dir, log_file, parser_type)
 
-    ##################
-    # Transformation #
-    ##################
     df = pd.read_csv(f'{output_dir}{log_file}_structured.csv')
-
-    # data preprocess
     df["Label"] = df["Label"].apply(lambda x: int(x != "-"))
 
-    df['datetime'] = pd.to_datetime(df["Date"] + " " + df['Time'], format='%Y-%m-%d %H:%M:%S')
-    df['timestamp'] = df["datetime"].values.astype(np.int64) // 10 ** 9
-    df['deltaT'] = df['datetime'].diff() / np.timedelta64(1, 's')
-    df['deltaT'].fillna(0)
+    time_format = '%Y.%m.%d %H:%M:%S' if is_semparser_like(args.ablation) else '%Y-%m-%d %H:%M:%S'
+    df['datetime'] = pd.to_datetime(df["Date"] + " " + df['Time'], format=time_format)
+    df['timestamp'] = df["datetime"].values.astype("int64") // 10 ** 9
+    df['deltaT'] = df['datetime'].diff() / pd.Timedelta(seconds=1)
+    df['deltaT'] = df['deltaT'].fillna(0)
+    if is_semantic_id_like(args.ablation):
+        df["EventId"] = df["EventId"].astype(str)
 
-    # sampling with sliding window
-    deeplog_df = sliding_window(df[["timestamp", "Label", "EventId", "deltaT"]],
-                                para={"window_size": float(window_size)*60, "step_size": float(step_size) * 60}
-                                )
+    deeplog_df = sliding_window(
+        df[["timestamp", "Label", "EventId", "deltaT"]],
+        para={"window_size": float(window_size) * 60, "step_size": float(step_size) * 60}
+    )
     output_dir += window_name
 
-    #########
-    # Train #
-    #########
     df_normal = deeplog_df[deeplog_df["Label"] == 0]
-    df_normal = df_normal.sample(frac=1, random_state=12).reset_index(drop=True) #shuffle
+    df_normal = df_normal.sample(frac=1, random_state=12).reset_index(drop=True)
     normal_len = len(df_normal)
     train_len = int(train_ratio) if train_ratio >= 1 else int(normal_len * train_ratio)
 
     train = df_normal[:train_len]
-    deeplog_file_generator(os.path.join(output_dir,'train'), train, ["EventId"])
-    print("training size {}".format(train_len))
-
-
-    ###############
-    # Test Normal #
-    ###############
     test_normal = df_normal[train_len:]
-    deeplog_file_generator(os.path.join(output_dir, 'test_normal'), test_normal, ["EventId"])
+
+    if is_semantic_id_like(args.ablation):
+        write_sequence_files(os.path.join(output_dir, 'train'), train["EventId"].tolist())
+        write_sequence_files(os.path.join(output_dir, 'test_normal'), test_normal["EventId"].tolist())
+    else:
+        deeplog_file_generator(os.path.join(output_dir, 'train'), train, ["EventId"])
+        deeplog_file_generator(os.path.join(output_dir, 'test_normal'), test_normal, ["EventId"])
+
+    print("training size {}".format(train_len))
     print("test normal size {}".format(normal_len - train_len))
 
-
-    #################
-    # Test Abnormal #
-    #################
     df_abnormal = deeplog_df[deeplog_df["Label"] == 1]
-    deeplog_file_generator(os.path.join(output_dir,'test_abnormal'), df_abnormal, ["EventId"])
+    if is_semantic_id_like(args.ablation):
+        write_sequence_files(os.path.join(output_dir, 'test_abnormal'), df_abnormal["EventId"].tolist())
+    else:
+        deeplog_file_generator(os.path.join(output_dir, 'test_abnormal'), df_abnormal, ["EventId"])
     print('test abnormal size {}'.format(len(df_abnormal)))
 
+    if is_semantic_id_like(args.ablation):
+        del df_normal
+        del train
+        del test_normal
+        gc.collect()

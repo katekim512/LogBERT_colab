@@ -10,6 +10,7 @@ filename = os.path.join(dirname, '../deeplog')
 import argparse
 import torch
 
+from ablation import add_ablation_argument, apply_logbert_ablation
 from bert_pytorch.dataset import WordVocab
 from bert_pytorch import Predictor, Trainer
 from bert_pytorch.dataset.utils import seed_everything
@@ -36,6 +37,7 @@ options["test_ratio"] = 0.1
 # features
 options["is_logkey"] = True
 options["is_time"] = False
+options["semantic_id_weight"] = 0.01
 
 options["hypersphere_loss"] = True
 options["hypersphere_loss_test"] = False
@@ -73,23 +75,23 @@ seed_everything(seed=1234)
 if not os.path.exists(options['model_dir']):
     os.makedirs(options['model_dir'], exist_ok=True)
 
-print("device", options["device"])
-print("features logkey:{} time: {}\n".format(options["is_logkey"], options["is_time"]))
-print("mask ratio", options["mask_ratio"])
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    add_ablation_argument(parser)
     subparsers = parser.add_subparsers()
 
     train_parser = subparsers.add_parser('train')
+    add_ablation_argument(train_parser)
     train_parser.set_defaults(mode='train')
 
     predict_parser = subparsers.add_parser('predict')
+    add_ablation_argument(predict_parser)
     predict_parser.set_defaults(mode='predict')
     predict_parser.add_argument("-m", "--mean", type=float, default=0)
     predict_parser.add_argument("-s", "--std", type=float, default=1)
 
     vocab_parser = subparsers.add_parser('vocab')
+    add_ablation_argument(vocab_parser)
     vocab_parser.set_defaults(mode='vocab')
     vocab_parser.add_argument("-s", "--vocab_size", type=int, default=None)
     vocab_parser.add_argument("-e", "--encoding", type=str, default="utf-8")
@@ -97,6 +99,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     print("arguments", args)
+    options = apply_logbert_ablation(options, args.ablation)
+    print("device", options["device"])
+    print("ablation", options["ablation"])
+    print("features logkey:{} time:{} freq:{}\n".format(options["is_logkey"], options["is_time"], options.get("is_freq", False)))
+    print("mask ratio", options["mask_ratio"])
 
     if args.mode == 'train':
         Trainer(options).train()
@@ -111,8 +118,5 @@ if __name__ == "__main__":
         print("VOCAB SIZE:", len(vocab))
         print("save vocab in", options["vocab_path"])
         vocab.save_vocab(options["vocab_path"])
-
-
-
 
 

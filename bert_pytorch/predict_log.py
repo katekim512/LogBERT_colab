@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import pickle
 import time
 import torch
+import os
 from tqdm import tqdm
 tqdm.disable = True
 from torch.utils.data import DataLoader
@@ -12,7 +13,7 @@ import gc
 
 from bert_pytorch.dataset import WordVocab
 from bert_pytorch.dataset import LogDataset
-from bert_pytorch.dataset.sample import fixed_window
+from bert_pytorch.dataset.sample import fixed_window, fixed_window_with_freq
 
 
 def compute_anomaly(results, params, seq_threshold=0.5):
@@ -68,6 +69,7 @@ class Predictor():
 
         self.is_logkey = options["is_logkey"]
         self.is_time = options["is_time"]
+        self.is_freq = options.get("is_freq", False)
         self.scale_path = options["scale_path"]
 
         self.hypersphere_loss = options["hypersphere_loss"]
@@ -102,35 +104,54 @@ class Predictor():
 
 
     @staticmethod
-    def generate_test(output_dir, file_name, window_size, adaptive_window, seq_len, scale, min_len, chunk_size=5000):
+    def generate_test(output_dir, file_name, window_size, adaptive_window, seq_len, scale, min_len, chunk_size=5000, use_freq=False):
         """
         :return: log_seqs: num_samples x session(seq)_length, tim_seqs: num_samples x session_length
         """
         log_seqs = []
         tim_seqs = []
-        with open(output_dir + file_name, "r") as f:
-            for idx, line in tqdm(enumerate(f)):
-                #if idx > 40: break
-                log_seq, tim_seq = fixed_window(line, window_size,
-                                                adaptive_window=adaptive_window,
-                                                seq_len=seq_len, min_len=min_len)
-                if len(log_seq) == 0:
-                    continue
+        token_path = output_dir + file_name
+        freq_path = output_dir + file_name + "_freq"
+        has_freq = use_freq and os.path.exists(freq_path)
 
-                # if scale is not None:
-                #     times = tim_seq
-                #     for i, tn in enumerate(times):
-                #         tn = np.array(tn).reshape(-1, 1)
-                #         times[i] = scale.transform(tn).reshape(-1).tolist()
-                #     tim_seq = times
+        freq_f = open(freq_path, "r") if has_freq else None
+        try:
+            with open(token_path, "r") as f:
+                for idx, line in tqdm(enumerate(f)):
+                    freq_line = freq_f.readline() if has_freq else None
 
-                log_seqs += log_seq
-                tim_seqs += tim_seq
+                    if has_freq:
+                        if not freq_line:
+                            raise ValueError(f"Frequency file ended early: {freq_path}")
+                        log_seq, tim_seq = fixed_window_with_freq(
+                            line,
+                            freq_line,
+                            window_size,
+                            adaptive_window=adaptive_window,
+                            seq_len=seq_len,
+                            min_len=min_len,
+                        )
+                    else:
+                        log_seq, tim_seq = fixed_window(
+                            line,
+                            window_size,
+                            adaptive_window=adaptive_window,
+                            seq_len=seq_len,
+                            min_len=min_len,
+                        )
+                    if len(log_seq) == 0:
+                        continue
 
-                if len(log_seqs) >= chunk_size:
-                    yield log_seqs[:chunk_size], tim_seqs[:chunk_size]
-                    log_seqs = log_seqs[chunk_size:]
-                    tim_seqs = tim_seqs[chunk_size:]
+                    log_seqs += log_seq
+                    tim_seqs += tim_seq
+
+                    if len(log_seqs) >= chunk_size:
+                        yield log_seqs[:chunk_size], tim_seqs[:chunk_size]
+                        log_seqs = log_seqs[chunk_size:]
+                        tim_seqs = tim_seqs[chunk_size:]
+        finally:
+            if freq_f is not None:
+                freq_f.close()
 
         if log_seqs:
             yield log_seqs, tim_seqs
@@ -297,7 +318,7 @@ class Predictor():
         for log_chunk, tim_chunk in self.generate_test(output_dir, file_name,
                                                     self.window_size, self.adaptive_window,
                                                     self.seq_len, scale, self.min_len,
-                                                    chunk_size=5000):
+                                                    chunk_size=5000, use_freq=self.is_freq):
             fixed_log, fixed_time = [], []
             for log_seq, time_seq in zip(log_chunk, tim_chunk):
                 log_seq, time_seq = list(log_seq), list(time_seq)
